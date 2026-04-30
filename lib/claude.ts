@@ -2,12 +2,16 @@ import Anthropic from "@anthropic-ai/sdk";
 import { SYSTEM_PROMPT, buildUserMessage } from "../prompts/system-prompt.js";
 import type { ClaudeAnalysisResult, ClaudeUsage, Provocation } from "../types/index.js";
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-if (!ANTHROPIC_API_KEY) {
-  throw new Error("Missing ANTHROPIC_API_KEY env var.");
+// Lazy client — env var is read on first use, not at module import time.
+let _anthropic: Anthropic | null = null;
+function getAnthropic(): Anthropic {
+  if (!_anthropic) {
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) throw new Error("Missing required env var: ANTHROPIC_API_KEY");
+    _anthropic = new Anthropic({ apiKey: key });
+  }
+  return _anthropic;
 }
-
-const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
 const MODEL = "claude-haiku-4-5-20251001";
 const MAX_TOKENS = 1024;
@@ -116,7 +120,7 @@ async function callOnce(userMessage: string, extraSystemSuffix: string): Promise
   text: string;
   usage: ClaudeUsage;
 }> {
-  const message = await anthropic.messages.create({
+  const message = await getAnthropic().messages.create({
     model: MODEL,
     max_tokens: MAX_TOKENS,
     temperature: TEMPERATURE,

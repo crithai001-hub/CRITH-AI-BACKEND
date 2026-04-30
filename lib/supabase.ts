@@ -1,21 +1,42 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+// Lazy clients — env vars are read on first use, not at module import time.
+// Keeps the function loadable on Vercel even when env is misconfigured, so
+// errors surface as clean 500s with a logged reason instead of
+// FUNCTION_INVOCATION_FAILED with no stack trace.
 
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
-  throw new Error(
-    "Missing Supabase env vars. Set SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY."
-  );
+let _supabaseAnon: SupabaseClient | null = null;
+let _supabaseService: SupabaseClient | null = null;
+
+function readEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing required env var: ${name}`);
+  return v;
 }
 
-// Anon client — used to validate user JWTs (auth.getUser(token)).
-export const supabaseAnon: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false }
-});
+export function getSupabaseAnon(): SupabaseClient {
+  if (!_supabaseAnon) {
+    _supabaseAnon = createClient(readEnv("SUPABASE_URL"), readEnv("SUPABASE_ANON_KEY"), {
+      auth: { persistSession: false, autoRefreshToken: false }
+    });
+  }
+  return _supabaseAnon;
+}
 
-// Service-role client — bypasses RLS. Use only for privileged inserts and quota updates.
-export const supabaseService: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false }
+export function getSupabaseService(): SupabaseClient {
+  if (!_supabaseService) {
+    _supabaseService = createClient(readEnv("SUPABASE_URL"), readEnv("SUPABASE_SERVICE_ROLE_KEY"), {
+      auth: { persistSession: false, autoRefreshToken: false }
+    });
+  }
+  return _supabaseService;
+}
+
+// Backward-compatible proxies for code that still imports the old names.
+// Each access goes through the lazy getter.
+export const supabaseAnon: SupabaseClient = new Proxy({} as SupabaseClient, {
+  get: (_target, prop) => Reflect.get(getSupabaseAnon(), prop)
+});
+export const supabaseService: SupabaseClient = new Proxy({} as SupabaseClient, {
+  get: (_target, prop) => Reflect.get(getSupabaseService(), prop)
 });
