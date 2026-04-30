@@ -79,27 +79,28 @@ The system prompt will need iteration. This section is the operational playbook.
 
 ### 1. Get a test JWT
 
-You need a Supabase JWT to call the protected endpoints. Easiest path:
-
-```ts
-// scripts/get-test-jwt.ts (or paste into a Node REPL)
-import { createClient } from "@supabase/supabase-js";
-const c = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
-const { data } = await c.auth.signInWithPassword({
-  email: "test@example.com",
-  password: "your-test-password"
-});
-console.log(data.session!.access_token);
-```
-
-Or sign in via Supabase Studio → Authentication → Users.
-
-Export it for `test-curl.sh`:
+Use the bundled helper. Requires Node 20.6+ for `--env-file`:
 
 ```bash
-export TEST_TOKEN=eyJhbGciOi...
+# .env.local must contain SUPABASE_URL and SUPABASE_ANON_KEY
+node --env-file=.env.local scripts/get-test-jwt.mjs me@example.com mypassword
+```
+
+Pipe straight to clipboard and into the test runner:
+
+```bash
+export TEST_TOKEN=$(node --env-file=.env.local scripts/get-test-jwt.mjs me@example.com mypassword)
 ./test-curl.sh
 ```
+
+Or against the deployed backend:
+
+```bash
+export BASE_URL="https://your-deployment.vercel.app"
+./test-curl.sh
+```
+
+Create the test user via Supabase Studio → Authentication → Users → Add user (email + password) before running.
 
 ### 2. Bump the prompt version
 
