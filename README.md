@@ -24,9 +24,9 @@ supabase db push
 Run locally:
 
 ```bash
-npm run dev      # vercel dev on http://localhost:3000
-npm test         # unit tests
-npm run build    # type-check
+npm run dev        # vercel dev on http://localhost:3000
+npm test           # unit tests
+npm run typecheck  # tsc --noEmit (renamed from "build" so Vercel doesn't run it during deploy)
 ```
 
 ## Endpoints
