@@ -2,6 +2,7 @@
   "name": "crith-v2-backend",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Crith AI V2 backend — Response Analyzer endpoint and engagement event logging.",
   "scripts": {
     "dev": "vercel dev",
