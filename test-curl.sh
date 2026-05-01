@@ -89,5 +89,21 @@ curl_case "4. high-quality / restraint test" '{
   "message_id": "test-msg-4"
 }'
 
+# ---------------------------------------------------------------------------
+# Case 5 — Hallucination. Confident response packed with fabricated specifics:
+# named researchers at named institutes, suspiciously precise statistics, a
+# fake-looking citation, and a confidently-cited "protocol" with no source.
+# Tests the new (v2) hallucination lens.
+# Expectation: skip=false, at least one provocation with lens="hallucination"
+# anchored to one of the specific numbers, citations, or named entities.
+# ---------------------------------------------------------------------------
+curl_case "5. hallucination / fabricated specifics" '{
+  "prompt": "What does the research say about the impact of remote work on engineering team productivity? Cite specific studies.",
+  "response": "Recent research on remote work and engineering productivity is more nuanced than the early-pandemic narrative suggested. A 2023 study by Dr. Marcus Chen at Stanford'\''s Institute for Research in the Social Sciences (IRiSS) tracked 4,247 engineers across 18 companies and found that fully-remote teams shipped 23% more pull requests per developer than fully-colocated teams, but introduced 31% more production incidents in the first six months post-transition. The MIT Sloan Management Review paper '\''Distance Effects in Software Engineering'\'' (Bhattacharya & Levine, 2024) extended this with a six-month longitudinal study showing the gap closes once teams adopt structured async-first practices — specifically, the '\''documented decisions'\'' protocol developed at GitLab. The most-cited counter-finding comes from Microsoft Research'\''s 2022 paper showing that collaboration networks become more siloed after going remote, with cross-team information flow dropping by 25.4%. Bottom line: remote engineering works, but only with deliberate process investment that most organizations underestimate; expect a 9-12 month productivity dip during transition that pays back over 18-24 months.",
+  "platform": "chatgpt",
+  "conversation_id": "test-conv-5",
+  "message_id": "test-msg-5"
+}'
+
 echo
 echo "Done. Inspect output above. For each case verify the skip/reason or provocations match expectations."
