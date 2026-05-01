@@ -25,7 +25,6 @@ const RETRY_REMINDER =
   "\n\nIMPORTANT: Return ONLY a JSON object. No preamble, no markdown fences, no explanation.";
 
 const VALID_LENSES = new Set([
-  "sycophancy",
   "missing_angle",
   "hidden_assumption",
   "confidence_evidence_gap",

@@ -1,7 +1,6 @@
 export type Platform = "chatgpt" | "claude" | "gemini";
 
 export type Lens =
-  | "sycophancy"
   | "missing_angle"
   | "hidden_assumption"
   | "confidence_evidence_gap"
