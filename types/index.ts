@@ -26,6 +26,11 @@ export interface AnalyzeRequestBody {
   message_id: string;
 }
 
+export interface ExplainRequestBody {
+  analysis_id: string;
+  provocation_index: number;
+}
+
 export interface EventsRequestBody {
   analysis_id: string;
   provocation_index: number;
@@ -48,6 +53,14 @@ export type AnalyzeResponse =
   | { skip: true; reason: SkipReason; analysis_id: string }
   | { skip: false; provocations: Provocation[]; analysis_id: string }
   | { error: "unauthorized" }
+  | { error: "quota_exceeded"; limit: number; used: number }
+  | { error: "internal" }
+  | { error: "bad_request"; message: string };
+
+export type ExplainResponse =
+  | { explanation: string }
+  | { error: "unauthorized" }
+  | { error: "not_found" }
   | { error: "quota_exceeded"; limit: number; used: number }
   | { error: "internal" }
   | { error: "bad_request"; message: string };

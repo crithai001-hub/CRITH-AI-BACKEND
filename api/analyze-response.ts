@@ -3,7 +3,7 @@ import { applyCors, handlePreflight } from "../lib/cors.js";
 import { getUserFromRequest } from "../lib/auth.js";
 import { evaluateTriggerGate } from "../lib/triggers.js";
 import { incrementResponseAnalysesQuota } from "../lib/quota.js";
-import { analyzeResponse } from "../lib/claude.js";
+import { analyzeResponse, truncateResponse } from "../lib/claude.js";
 import { supabaseService } from "../lib/supabase.js";
 import { SYSTEM_PROMPT_VERSION } from "../prompts/system-prompt.js";
 import type {
@@ -58,7 +58,11 @@ async function insertAnalysisRow(input: InsertRowInput): Promise<string | null> 
       cached_tokens: input.cached_tokens,
       latency_ms: input.latency_ms,
       prompt_version: SYSTEM_PROMPT_VERSION,
-      provocations: input.provocations.length > 0 ? input.provocations : null
+      provocations: input.provocations.length > 0 ? input.provocations : null,
+      // Stored truncated to match what the analyzer actually saw — keeps the
+      // explainer's view of the response consistent with the analyzer's.
+      original_prompt: input.body.prompt,
+      original_response: truncateResponse(input.body.response)
     })
     .select("id")
     .single();

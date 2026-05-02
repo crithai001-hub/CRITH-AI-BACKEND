@@ -105,5 +105,47 @@ curl_case "5. confidence-evidence gap / fabricated specifics" '{
   "message_id": "test-msg-5"
 }'
 
+# ---------------------------------------------------------------------------
+# Case 6 — Round-trip: analyze a strategy response, then call /api/explain-provocation
+# on the first provocation. Verifies the explainer endpoint end-to-end and that
+# original_prompt/original_response columns are populated.
+# Expectation: 200 with { explanation: "..." }, 2-3 sentences of plain prose.
+# ---------------------------------------------------------------------------
+echo
+echo "=== 6. analyze + explain (round trip) ==="
+ANALYZE_BODY='{
+  "prompt": "Should I quit my job to start a SaaS company?",
+  "response": "Yes, you should absolutely make the leap. The SaaS market is booming and timing has never been better. Start by building an MVP in 4-6 weeks, then launch on Product Hunt for distribution. Aim for $10K MRR within your first 6 months — anything less and the business model isn'\''t working. You should plan to live off savings for at least 12 months while you find product-market fit. Most successful SaaS founders bootstrap rather than raise — VC money corrupts product decisions and forces premature scaling. Focus on a niche audience first, charge $49-99/month from day one, and ignore enterprise sales until you hit $1M ARR.",
+  "platform": "chatgpt",
+  "conversation_id": "test-conv-6",
+  "message_id": "test-msg-6"
+}'
+
+ANALYZE_RESPONSE=$(curl -sS -X POST "$BASE_URL/api/analyze-response" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TEST_TOKEN" \
+  -H "Origin: chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef" \
+  -d "$ANALYZE_BODY")
+
+echo "--- analyze response ---"
+echo "$ANALYZE_RESPONSE" | (command -v jq >/dev/null && jq . || cat)
+
+ANALYSIS_ID=$(echo "$ANALYZE_RESPONSE" | (command -v jq >/dev/null \
+  && jq -r '.analysis_id // empty' \
+  || sed -n 's/.*"analysis_id":"\([^"]*\)".*/\1/p'))
+
+if [[ -n "$ANALYSIS_ID" && "$ANALYSIS_ID" != "null" ]]; then
+  echo
+  echo "--- explain provocation 0 (analysis_id=$ANALYSIS_ID) ---"
+  curl -sS -X POST "$BASE_URL/api/explain-provocation" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TEST_TOKEN" \
+    -H "Origin: chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef" \
+    -d "{\"analysis_id\":\"$ANALYSIS_ID\",\"provocation_index\":0}" \
+    | (command -v jq >/dev/null && jq . || cat)
+else
+  echo "No analysis_id returned — skipping explain step."
+fi
+
 echo
 echo "Done. Inspect output above. For each case verify the skip/reason or provocations match expectations."
