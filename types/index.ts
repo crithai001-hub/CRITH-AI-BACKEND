@@ -16,7 +16,15 @@ export type SkipReason =
   | "quota_exceeded"
   | "claude_error";
 
-export type EventType = "shown" | "expanded" | "sent_to_ai" | "dismissed" | "copied";
+export type EventType =
+  | "shown"
+  | "expanded"
+  | "sent_to_ai"
+  | "dismissed"
+  | "copied"
+  | "explained"
+  | "useful"
+  | "not_useful";
 
 export interface AnalyzeRequestBody {
   prompt: string;

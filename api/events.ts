@@ -9,7 +9,10 @@ const VALID_EVENTS: ReadonlySet<EventType> = new Set([
   "expanded",
   "sent_to_ai",
   "dismissed",
-  "copied"
+  "copied",
+  "explained",
+  "useful",
+  "not_useful"
 ]);
 
 function isValidBody(raw: unknown): raw is EventsRequestBody {
