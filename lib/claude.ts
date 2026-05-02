@@ -67,7 +67,10 @@ function extractFirstJsonBlock(text: string): string | null {
   return null;
 }
 
-function validateAnalysis(parsed: unknown): ClaudeAnalysisResult | null {
+function validateAnalysis(
+  parsed: unknown,
+  aiResponse: string
+): ClaudeAnalysisResult | null {
   if (!parsed || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;
   if (typeof obj.skip !== "boolean") return null;
@@ -90,6 +93,20 @@ function validateAnalysis(parsed: unknown): ClaudeAnalysisResult | null {
       return null;
     }
     if (!VALID_LENSES.has(p.lens) || !VALID_SEVERITIES.has(p.severity)) return null;
+
+    // Anchor MUST be a verbatim substring of the response. The extension renders
+    // each underline by calling response.includes(anchored_to); if that returns
+    // false the provocation silently has no UI anchor. Drop the bad ones here
+    // so the extension never sees them. Logged for prompt-quality monitoring —
+    // a high drop rate means the model is paraphrasing despite the prompt rule.
+    if (!aiResponse.includes(p.anchored_to)) {
+      console.warn("[claude] dropping provocation with non-verbatim anchor", {
+        lens: p.lens,
+        anchored_to_preview: p.anchored_to.slice(0, 120)
+      });
+      continue;
+    }
+
     provocations.push({
       question: p.question,
       lens: p.lens as Provocation["lens"],
@@ -151,7 +168,11 @@ export async function analyzeResponse(
   userPrompt: string,
   aiResponse: string
 ): Promise<ClaudeCallResult> {
-  const userMessage = buildUserMessage(userPrompt, truncateResponse(aiResponse));
+  // Truncate once and reuse — both the model and the anchor validator must see
+  // the same string, otherwise an anchor that exists in the full response but
+  // got cut by truncation would be wrongly dropped (or vice versa).
+  const truncated = truncateResponse(aiResponse);
+  const userMessage = buildUserMessage(userPrompt, truncated);
 
   // First attempt — clean system prompt, prompt cache eligible.
   const first = await callOnce(userMessage, "");
@@ -159,7 +180,7 @@ export async function analyzeResponse(
   if (firstJson) {
     try {
       const parsed = JSON.parse(firstJson);
-      const validated = validateAnalysis(parsed);
+      const validated = validateAnalysis(parsed, truncated);
       if (validated) return { ok: true, result: validated, usage: first.usage };
     } catch {
       // fall through to retry
@@ -179,7 +200,7 @@ export async function analyzeResponse(
   if (secondJson) {
     try {
       const parsed = JSON.parse(secondJson);
-      const validated = validateAnalysis(parsed);
+      const validated = validateAnalysis(parsed, truncated);
       if (validated) return { ok: true, result: validated, usage: totalUsage };
     } catch {
       // fall through to parse_error
