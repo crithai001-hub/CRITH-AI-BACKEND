@@ -2,7 +2,12 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { applyCors, handlePreflight } from "../lib/cors.js";
 import { getUserFromRequest } from "../lib/auth.js";
 import { supabaseService } from "../lib/supabase.js";
-import type { EventsRequestBody, EventType, Provocation } from "../types/index.js";
+import type {
+  EventsRequestBody,
+  EventType,
+  Provocation,
+  Validation
+} from "../types/index.js";
 
 const VALID_EVENTS: ReadonlySet<EventType> = new Set([
   "shown",
@@ -12,7 +17,8 @@ const VALID_EVENTS: ReadonlySet<EventType> = new Set([
   "copied",
   "explained",
   "useful",
-  "not_useful"
+  "not_useful",
+  "asked_ai"
 ]);
 
 function isValidBody(raw: unknown): raw is EventsRequestBody {
@@ -50,11 +56,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    // Verify the analysis belongs to this user, and fetch the provocations
-    // array so we can denormalize lens/severity onto the event row.
+    // Verify the analysis belongs to this user, and fetch both the legacy
+    // provocations and the v14+ validations columns so we can denormalize
+    // lens/severity onto the event row regardless of which schema produced it.
     const { data: analysis, error: lookupError } = await supabaseService
       .from("response_analyses")
-      .select("user_id, provocations")
+      .select("user_id, provocations, validations")
       .eq("id", body.analysis_id)
       .maybeSingle();
 
@@ -68,9 +75,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
+    // Prefer v14 validations; fall back to legacy provocations. Both shapes
+    // expose the lens/severity fields the events table denormalizes.
+    const validations = (analysis.validations ?? []) as Validation[];
     const provocations = (analysis.provocations ?? []) as Provocation[];
-    const provocation = provocations[body.provocation_index];
-    if (!provocation) {
+    const items: Array<Validation | Provocation> =
+      validations.length > 0 ? validations : provocations;
+    const item = items[body.provocation_index];
+    if (!item) {
       res
         .status(400)
         .json({ error: "bad_request", message: "provocation_index out of range" });
@@ -80,8 +92,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const { error: insertError } = await supabaseService.from("provocation_events").insert({
       analysis_id: body.analysis_id,
       provocation_index: body.provocation_index,
-      lens: provocation.lens,
-      severity: provocation.severity,
+      lens: item.lens,
+      severity: item.severity,
       event_type: body.event_type
     });
 

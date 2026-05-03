@@ -35,7 +35,8 @@ export type EventType =
   | "copied"
   | "explained"
   | "useful"
-  | "not_useful";
+  | "not_useful"
+  | "asked_ai";
 
 export interface AnalyzeRequestBody {
   prompt: string;
@@ -57,6 +58,10 @@ export interface EventsRequestBody {
   event_type: EventType;
 }
 
+// Legacy v12/v13 output shape. Kept because pre-v14 response_analyses rows
+// store this in the `provocations` column and the explainer endpoint still
+// reads them. New rows under v14+ store Validation in the `validations`
+// column instead.
 export interface Provocation {
   question: string;
   lens: Lens;
@@ -64,14 +69,25 @@ export interface Provocation {
   severity: Severity;
 }
 
+// v14+ output shape. `problem` is a declarative statement of what the AI did
+// wrong; `follow_up_prompt` is a ready-to-send first-person prompt the user
+// fires back at the AI in one tap.
+export interface Validation {
+  problem: string;
+  follow_up_prompt: string;
+  lens: Lens;
+  anchored_to: string;
+  severity: Severity;
+}
+
 export interface ClaudeAnalysisResult {
   skip: boolean;
-  provocations: Provocation[];
+  validations: Validation[];
 }
 
 export type AnalyzeResponse =
   | { skip: true; reason: SkipReason; analysis_id: string }
-  | { skip: false; provocations: Provocation[]; analysis_id: string }
+  | { skip: false; validations: Validation[]; analysis_id: string }
   | { error: "unauthorized" }
   | { error: "quota_exceeded"; limit: number; used: number }
   | { error: "internal" }

@@ -11,8 +11,8 @@ import type {
   AnalyzeRequestBody,
   ConversationTurn,
   Platform,
-  Provocation,
-  SkipReason
+  SkipReason,
+  Validation
 } from "../types/index.js";
 
 const VALID_PLATFORMS: ReadonlySet<Platform> = new Set([
@@ -51,7 +51,7 @@ interface InsertRowInput {
   body: AnalyzeRequestBody;
   skipped: boolean;
   skip_reason: SkipReason | null;
-  provocations: Provocation[];
+  validations: Validation[];
   tokens_in: number;
   tokens_out: number;
   cached_tokens: number;
@@ -72,15 +72,17 @@ async function insertAnalysisRow(input: InsertRowInput): Promise<string | null> 
       response_length: input.body.response.length,
       skipped: input.skipped,
       skip_reason: input.skip_reason,
-      provocation_count: input.provocations.length,
+      provocation_count: input.validations.length,
       tokens_in: input.tokens_in,
       tokens_out: input.tokens_out,
       cached_tokens: input.cached_tokens,
       latency_ms: input.latency_ms,
       prompt_version: SYSTEM_PROMPT_VERSION,
-      provocations: input.provocations.length > 0 ? input.provocations : null,
-      // Stored truncated to match what the analyzer actually saw — keeps the
-      // explainer's view of the response consistent with the analyzer's.
+      // v14+ schema. Old `provocations` column stays nullable for legacy rows;
+      // we no longer write to it. New writes go to `validations` only.
+      validations: input.validations,
+      // Stored truncated to match what the analyzer actually saw — keeps any
+      // downstream consumer's view of the response consistent with the analyzer's.
       original_prompt: input.body.prompt,
       original_response: truncateResponse(input.body.response),
       conversation_history_turn_count: input.history_turn_count,
@@ -133,7 +135,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         body,
         skipped: true,
         skip_reason: gate.reason,
-        provocations: [],
+        validations: [],
         tokens_in: 0,
         tokens_out: 0,
         cached_tokens: 0,
@@ -158,7 +160,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         body,
         skipped: true,
         skip_reason: "quota_exceeded",
-        provocations: [],
+        validations: [],
         tokens_in: 0,
         tokens_out: 0,
         cached_tokens: 0,
@@ -187,7 +189,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         body,
         skipped: true,
         skip_reason: "claude_error",
-        provocations: [],
+        validations: [],
         tokens_in: 0,
         tokens_out: 0,
         cached_tokens: 0,
@@ -207,7 +209,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         body,
         skipped: true,
         skip_reason: "parse_error",
-        provocations: [],
+        validations: [],
         tokens_in: result.usage.tokens_in,
         tokens_out: result.usage.tokens_out,
         cached_tokens: result.usage.cached_tokens,
@@ -223,7 +225,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    const provocations: Provocation[] = result.result.skip ? [] : result.result.provocations;
+    const validations: Validation[] = result.result.skip ? [] : result.result.validations;
     const skipped = result.result.skip;
 
     const analysisId = await insertAnalysisRow({
@@ -231,7 +233,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       body,
       skipped,
       skip_reason: skipped ? "trivial" : null,
-      provocations,
+      validations,
       tokens_in: result.usage.tokens_in,
       tokens_out: result.usage.tokens_out,
       cached_tokens: result.usage.cached_tokens,
@@ -248,7 +250,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     if (skipped) {
       res.status(200).json({ skip: true, reason: "trivial", analysis_id: analysisId });
     } else {
-      res.status(200).json({ skip: false, provocations, analysis_id: analysisId });
+      res.status(200).json({ skip: false, validations, analysis_id: analysisId });
     }
   } catch (err) {
     console.error("[analyze-response] unhandled", err);

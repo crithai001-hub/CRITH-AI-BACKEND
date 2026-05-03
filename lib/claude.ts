@@ -4,7 +4,7 @@ import type {
   ClaudeAnalysisResult,
   ClaudeUsage,
   ConversationTurn,
-  Provocation
+  Validation
 } from "../types/index.js";
 
 // Lazy client — env var is read on first use, not at module import time.
@@ -36,6 +36,12 @@ const VALID_LENSES = new Set([
   "question_mismatch"
 ]);
 const VALID_SEVERITIES = new Set(["high", "medium", "low"]);
+
+// Hard caps mirror the system prompt's stated limits. The model is told these
+// in plain English; the validator enforces them so a runaway sentence can't
+// blow out the card UI.
+const PROBLEM_MAX_CHARS = 220;
+const FOLLOW_UP_MAX_CHARS = 350;
 
 export function truncateResponse(response: string): string {
   if (response.length <= MAX_RESPONSE_CHARS) return response;
@@ -79,48 +85,70 @@ function validateAnalysis(
   if (!parsed || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;
   if (typeof obj.skip !== "boolean") return null;
-  if (!Array.isArray(obj.provocations)) return null;
+  if (!Array.isArray(obj.validations)) return null;
 
-  if (obj.skip && obj.provocations.length > 0) {
-    return { skip: true, provocations: [] };
+  if (obj.skip && obj.validations.length > 0) {
+    return { skip: true, validations: [] };
   }
 
-  const provocations: Provocation[] = [];
-  for (const raw of obj.provocations) {
+  const validations: Validation[] = [];
+  for (const raw of obj.validations) {
     if (!raw || typeof raw !== "object") return null;
-    const p = raw as Record<string, unknown>;
+    const v = raw as Record<string, unknown>;
     if (
-      typeof p.question !== "string" ||
-      typeof p.lens !== "string" ||
-      typeof p.anchored_to !== "string" ||
-      typeof p.severity !== "string"
+      typeof v.problem !== "string" ||
+      typeof v.follow_up_prompt !== "string" ||
+      typeof v.lens !== "string" ||
+      typeof v.anchored_to !== "string" ||
+      typeof v.severity !== "string"
     ) {
       return null;
     }
-    if (!VALID_LENSES.has(p.lens) || !VALID_SEVERITIES.has(p.severity)) return null;
+    if (!VALID_LENSES.has(v.lens) || !VALID_SEVERITIES.has(v.severity)) return null;
 
-    // Anchor MUST be a verbatim substring of the response. The extension renders
-    // each underline by calling response.includes(anchored_to); if that returns
-    // false the provocation silently has no UI anchor. Drop the bad ones here
-    // so the extension never sees them. Logged for prompt-quality monitoring —
-    // a high drop rate means the model is paraphrasing despite the prompt rule.
-    if (!aiResponse.includes(p.anchored_to)) {
-      console.warn("[claude] dropping provocation with non-verbatim anchor", {
-        lens: p.lens,
-        anchored_to_preview: p.anchored_to.slice(0, 120)
+    // Soft drops below: instead of failing the whole batch, drop the single
+    // offending validation and keep the rest. Logged for prompt-quality
+    // monitoring — a high drop rate means the model is breaking the contract.
+
+    if (v.problem.length === 0 || v.problem.length > PROBLEM_MAX_CHARS) {
+      console.warn("[claude] dropping validation: problem length out of range", {
+        length: v.problem.length,
+        cap: PROBLEM_MAX_CHARS,
+        lens: v.lens
       });
       continue;
     }
 
-    provocations.push({
-      question: p.question,
-      lens: p.lens as Provocation["lens"],
-      anchored_to: p.anchored_to,
-      severity: p.severity as Provocation["severity"]
+    if (v.follow_up_prompt.length === 0 || v.follow_up_prompt.length > FOLLOW_UP_MAX_CHARS) {
+      console.warn("[claude] dropping validation: follow_up_prompt length out of range", {
+        length: v.follow_up_prompt.length,
+        cap: FOLLOW_UP_MAX_CHARS,
+        lens: v.lens
+      });
+      continue;
+    }
+
+    // Anchor MUST be a verbatim substring of the response. The extension renders
+    // each underline by calling response.includes(anchored_to); if that returns
+    // false the validation silently has no UI anchor.
+    if (!aiResponse.includes(v.anchored_to)) {
+      console.warn("[claude] dropping validation: anchor not verbatim", {
+        lens: v.lens,
+        anchored_to_preview: v.anchored_to.slice(0, 120)
+      });
+      continue;
+    }
+
+    validations.push({
+      problem: v.problem,
+      follow_up_prompt: v.follow_up_prompt,
+      lens: v.lens as Validation["lens"],
+      anchored_to: v.anchored_to,
+      severity: v.severity as Validation["severity"]
     });
   }
 
-  return { skip: obj.skip, provocations };
+  return { skip: obj.skip, validations };
 }
 
 interface ClaudeCallSuccess {

@@ -177,5 +177,24 @@ curl_case "7. multi-turn / context-aware pricing" '{
   ]
 }'
 
+# ---------------------------------------------------------------------------
+# Case 8 — v14 follow-up quality test. Specifically tests whether the
+# follow_up_prompt sounds natural and forces the AI to address the gap.
+#
+# NOTE: this response is ~43 words, under the 80-word "trivial" gate
+# threshold, AND no conversation_history is sent — so the v13 bypass
+# does NOT fire and this case will currently skip with reason "trivial".
+# To actually exercise v14 here, either lengthen the response in the
+# spec or send a conversation_history. Reporting the skip as-is so the
+# spec author can decide.
+# ---------------------------------------------------------------------------
+curl_case "8. v14 follow-up quality / pricing decision" '{
+  "prompt": "I'\''m building a Chrome extension for solo founders. Should I price at $5/month or $10/month?",
+  "response": "$10/month is the better choice. Most successful Chrome extensions in the productivity space charge between $7-15/month, and $10 positions you in the premium-but-accessible range. At $5 you risk being perceived as low-value, and you'\''d need 2x the volume to hit the same revenue.",
+  "platform": "chatgpt",
+  "conversation_id": "test-conv-8",
+  "message_id": "test-msg-8"
+}'
+
 echo
-echo "Done. Inspect output above. For each case verify the skip/reason or provocations match expectations."
+echo "Done. Inspect output above. For each case verify the skip/reason or validations match expectations."
