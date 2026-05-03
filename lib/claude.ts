@@ -1,6 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { SYSTEM_PROMPT, buildUserMessage } from "../prompts/system-prompt.js";
-import type { ClaudeAnalysisResult, ClaudeUsage, Provocation } from "../types/index.js";
+import type {
+  ClaudeAnalysisResult,
+  ClaudeUsage,
+  ConversationTurn,
+  Provocation
+} from "../types/index.js";
 
 // Lazy client — env var is read on first use, not at module import time.
 let _anthropic: Anthropic | null = null;
@@ -166,13 +171,14 @@ async function callOnce(userMessage: string, extraSystemSuffix: string): Promise
 
 export async function analyzeResponse(
   userPrompt: string,
-  aiResponse: string
+  aiResponse: string,
+  conversationHistory?: ReadonlyArray<ConversationTurn>
 ): Promise<ClaudeCallResult> {
   // Truncate once and reuse — both the model and the anchor validator must see
   // the same string, otherwise an anchor that exists in the full response but
   // got cut by truncation would be wrongly dropped (or vice versa).
   const truncated = truncateResponse(aiResponse);
-  const userMessage = buildUserMessage(userPrompt, truncated);
+  const userMessage = buildUserMessage(userPrompt, truncated, conversationHistory);
 
   // First attempt — clean system prompt, prompt cache eligible.
   const first = await callOnce(userMessage, "");

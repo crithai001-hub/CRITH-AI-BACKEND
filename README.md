@@ -38,9 +38,12 @@ npm run typecheck  # tsc --noEmit (renamed from "build" so Vercel doesn't run it
 {
   prompt: string;
   response: string;
-  platform: "chatgpt" | "claude" | "gemini";
+  platform: "chatgpt" | "claude" | "gemini" | "perplexity" | "grok" | "deepseek";
   conversation_id: string;
   message_id: string;
+  conversation_history?: Array<{ role: "user" | "assistant"; content: string }>;
+  // ↑ optional. Last 6 turns of prior conversation. Capped server-side at
+  //   6 entries / 1500 chars each. See "Conversation context" below.
 }
 
 // Response (analyzed)
@@ -202,7 +205,39 @@ group by 1
 order by 1;
 ```
 
-### 4. Reset a test user's quota
+### 4. Conversation context (analyzer v12+)
+
+`conversation_history` lets the analyzer see prior turns of the conversation it's analyzing. Without it, the model treats every turn as if the user just opened the chat — so anything the user already specified in turn 1 (audience, scale, budget, jurisdiction) gets falsely flagged as a "hidden assumption" when the AI references it in a later turn. With it, those false positives go away and the analyzer can also catch new failure modes like the AI contradicting itself across turns or dropping a thread the user raised earlier.
+
+**Caps:** server-side, hardcoded in `lib/validate-history.ts`:
+
+- max 6 turns (oldest dropped first if more are sent)
+- max 1500 chars per turn (truncated with `[...]` suffix)
+
+These are deliberately tight to keep the analyzer's input-token cost predictable. Revisit if Supabase data shows the model is missing context that would have fit comfortably (e.g. average turn length is 200 chars but key context lives in a single 2000-char turn that gets cut).
+
+**Test it:**
+
+Case 7 in `test-curl.sh` is the regression scenario. The user specifies their audience upfront, then asks for pricing two turns later. Pre-v12 the analyzer flagged the audience as assumed; under v12 it should not. Run the suite and confirm case 7's provocations focus on the pricing logic, not the audience.
+
+**See what's being sent in production:**
+
+```sql
+select
+  prompt_version,
+  count(*)                                          as analyses,
+  avg(conversation_history_turn_count)::numeric(10,2) as avg_turns,
+  avg(conversation_history_chars)::numeric(10,2)      as avg_chars,
+  sum(case when conversation_history_turn_count > 0 then 1 else 0 end) as with_context
+from response_analyses
+where created_at > now() - interval '7 days'
+group by prompt_version
+order by prompt_version;
+```
+
+If `with_context` stays at 0 even after extension v12.x rollout, the extension isn't sending the field. If `avg_turns` is consistently < 6 but `with_context` is high, users genuinely have short conversations — caps are not the limiting factor. If `avg_chars` hits the cap (~9000 = 6 × 1500) every time, raise the per-turn cap.
+
+### 5. Reset a test user's quota
 
 When a test user hits the limit during tuning:
 

@@ -147,5 +147,35 @@ else
   echo "No analysis_id returned — skipping explain step."
 fi
 
+# ---------------------------------------------------------------------------
+# Case 7 — Multi-turn conversation context. Regression test for v12.
+#
+# The user already specified their audience (solo founders / small startup
+# teams) in turn 1 of the prior conversation. The CURRENT turn is a pricing
+# question; the AI's response references that audience to justify $97/month.
+#
+# v11 (and any version without the # Conversation context section) almost
+# certainly flagged "the AI assumed your audience is solopreneurs" as a
+# hidden_assumption — a false positive, since the user gave that info upfront.
+#
+# Expectation under v12: 1-3 provocations, NONE of which treat the audience
+# as hidden/assumed. Provocations should focus on the pricing logic itself
+# ($97 anchor, premium-but-accessible positioning, demand validation, etc.).
+# Re-run after every prompt change to catch context-handling regressions.
+# ---------------------------------------------------------------------------
+curl_case "7. multi-turn / context-aware pricing" '{
+  "prompt": "What pricing should I use?",
+  "response": "Based on what we'\''ve discussed, I'\''d recommend starting at $97/month for the Pro tier. This positions you in the premium-but-accessible range and matches what your audience expects from a Chrome extension targeting small startup founders.",
+  "platform": "chatgpt",
+  "conversation_id": "test-conv-7",
+  "message_id": "test-msg-7",
+  "conversation_history": [
+    {"role": "user", "content": "I'\''m building a Chrome extension for solo founders and small startup teams (under 10 people). It helps them think more critically about AI responses. I'\''m trying to figure out my GTM strategy."},
+    {"role": "assistant", "content": "Got it — for that audience, focus on Reddit communities and IndieHackers first. Avoid LinkedIn outreach which works better for enterprise..."},
+    {"role": "user", "content": "Got it. What about my landing page — what should I emphasize?"},
+    {"role": "assistant", "content": "Lead with the founder-pain story. Small startup founders trust other founders. Skip the corporate copy..."}
+  ]
+}'
+
 echo
 echo "Done. Inspect output above. For each case verify the skip/reason or provocations match expectations."

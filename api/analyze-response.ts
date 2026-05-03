@@ -5,27 +5,45 @@ import { evaluateTriggerGate } from "../lib/triggers.js";
 import { incrementResponseAnalysesQuota } from "../lib/quota.js";
 import { analyzeResponse, truncateResponse } from "../lib/claude.js";
 import { supabaseService } from "../lib/supabase.js";
+import { validateConversationHistory } from "../lib/validate-history.js";
 import { SYSTEM_PROMPT_VERSION } from "../prompts/system-prompt.js";
 import type {
   AnalyzeRequestBody,
+  ConversationTurn,
   Platform,
   Provocation,
   SkipReason
 } from "../types/index.js";
 
-const VALID_PLATFORMS: ReadonlySet<Platform> = new Set(["chatgpt", "claude", "gemini"]);
+const VALID_PLATFORMS: ReadonlySet<Platform> = new Set([
+  "chatgpt",
+  "claude",
+  "gemini",
+  "perplexity",
+  "grok",
+  "deepseek"
+]);
 
 function isValidBody(raw: unknown): raw is AnalyzeRequestBody {
   if (!raw || typeof raw !== "object") return false;
   const b = raw as Record<string, unknown>;
-  return (
-    typeof b.prompt === "string" &&
-    typeof b.response === "string" &&
-    typeof b.platform === "string" &&
-    VALID_PLATFORMS.has(b.platform as Platform) &&
-    typeof b.conversation_id === "string" &&
-    typeof b.message_id === "string"
-  );
+  if (
+    typeof b.prompt !== "string" ||
+    typeof b.response !== "string" ||
+    typeof b.platform !== "string" ||
+    !VALID_PLATFORMS.has(b.platform as Platform) ||
+    typeof b.conversation_id !== "string" ||
+    typeof b.message_id !== "string"
+  ) {
+    return false;
+  }
+  // conversation_history is optional; if present it must be an array.
+  // Per-entry validation happens in validateConversationHistory which never
+  // throws — it cleans/drops bad entries silently.
+  if (b.conversation_history !== undefined && !Array.isArray(b.conversation_history)) {
+    return false;
+  }
+  return true;
 }
 
 interface InsertRowInput {
@@ -38,6 +56,8 @@ interface InsertRowInput {
   tokens_out: number;
   cached_tokens: number;
   latency_ms: number;
+  history_turn_count: number;
+  history_chars: number;
 }
 
 async function insertAnalysisRow(input: InsertRowInput): Promise<string | null> {
@@ -62,7 +82,9 @@ async function insertAnalysisRow(input: InsertRowInput): Promise<string | null> 
       // Stored truncated to match what the analyzer actually saw — keeps the
       // explainer's view of the response consistent with the analyzer's.
       original_prompt: input.body.prompt,
-      original_response: truncateResponse(input.body.response)
+      original_response: truncateResponse(input.body.response),
+      conversation_history_turn_count: input.history_turn_count,
+      conversation_history_chars: input.history_chars
     })
     .select("id")
     .single();
@@ -96,6 +118,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
+    // Validate conversation_history once at the top so every downstream branch
+    // (gate skip, quota, success, error) logs the same diagnostic counts.
+    const history = validateConversationHistory(body.conversation_history);
+    const cleanedHistory: ConversationTurn[] = history.cleaned;
+
     // Trigger gate — pure functions, no I/O.
     const gate = evaluateTriggerGate(body.prompt, body.response);
     if (gate.skip && gate.reason) {
@@ -108,7 +135,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         tokens_in: 0,
         tokens_out: 0,
         cached_tokens: 0,
-        latency_ms: 0
+        latency_ms: 0,
+        history_turn_count: history.turn_count,
+        history_chars: history.char_count
       });
       res.status(200).json({
         skip: true,
@@ -131,7 +160,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         tokens_in: 0,
         tokens_out: 0,
         cached_tokens: 0,
-        latency_ms: 0
+        latency_ms: 0,
+        history_turn_count: history.turn_count,
+        history_chars: history.char_count
       });
       res.status(429).json({
         error: "quota_exceeded",
@@ -145,7 +176,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const start = Date.now();
     let result;
     try {
-      result = await analyzeResponse(body.prompt, body.response);
+      result = await analyzeResponse(body.prompt, body.response, cleanedHistory);
     } catch (err) {
       console.error("[analyze-response] claude error", err);
       const latency_ms = Date.now() - start;
@@ -158,7 +189,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         tokens_in: 0,
         tokens_out: 0,
         cached_tokens: 0,
-        latency_ms
+        latency_ms,
+        history_turn_count: history.turn_count,
+        history_chars: history.char_count
       });
       res.status(500).json({ error: "internal" });
       return;
@@ -176,7 +209,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         tokens_in: result.usage.tokens_in,
         tokens_out: result.usage.tokens_out,
         cached_tokens: result.usage.cached_tokens,
-        latency_ms
+        latency_ms,
+        history_turn_count: history.turn_count,
+        history_chars: history.char_count
       });
       res.status(200).json({
         skip: true,
@@ -198,7 +233,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       tokens_in: result.usage.tokens_in,
       tokens_out: result.usage.tokens_out,
       cached_tokens: result.usage.cached_tokens,
-      latency_ms
+      latency_ms,
+      history_turn_count: history.turn_count,
+      history_chars: history.char_count
     });
 
     if (!analysisId) {

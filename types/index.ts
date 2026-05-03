@@ -1,4 +1,15 @@
-export type Platform = "chatgpt" | "claude" | "gemini";
+export type Platform =
+  | "chatgpt"
+  | "claude"
+  | "gemini"
+  | "perplexity"
+  | "grok"
+  | "deepseek";
+
+export interface ConversationTurn {
+  role: "user" | "assistant";
+  content: string;
+}
 
 export type Lens =
   | "missing_angle"
@@ -32,6 +43,7 @@ export interface AnalyzeRequestBody {
   platform: Platform;
   conversation_id: string;
   message_id: string;
+  conversation_history?: ConversationTurn[];
 }
 
 export interface ExplainRequestBody {
