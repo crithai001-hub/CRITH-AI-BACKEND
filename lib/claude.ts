@@ -40,8 +40,13 @@ const VALID_SEVERITIES = new Set(["high", "medium", "low"]);
 // Hard caps mirror the system prompt's stated limits. The model is told these
 // in plain English; the validator enforces them so a runaway sentence can't
 // blow out the card UI.
-const PROBLEM_MAX_CHARS = 220;
-const FOLLOW_UP_MAX_CHARS = 350;
+//
+// v15: relaxed from 220/350 after field testing showed the model consistently
+// produced 226-286 char problem statements (good content, just over). Bumping
+// to 300/450 keeps the "reads in 5 seconds" feel while letting natural prose
+// through. Drop rate dropped from ~80% to near zero on the same fixtures.
+const PROBLEM_MAX_CHARS = 300;
+const FOLLOW_UP_MAX_CHARS = 450;
 
 export function truncateResponse(response: string): string {
   if (response.length <= MAX_RESPONSE_CHARS) return response;
