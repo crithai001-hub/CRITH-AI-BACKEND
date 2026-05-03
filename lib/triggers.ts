@@ -40,8 +40,19 @@ export function isFactualLookup(prompt: string): boolean {
 }
 
 // Pure trigger gate. Order: word count → code → factual. First match wins.
-export function evaluateTriggerGate(prompt: string, response: string): TriggerGateResult {
-  if (countWords(response) < WORD_COUNT_THRESHOLD) {
+//
+// hasContext (v13+): when the request includes prior conversation turns, the
+// trivial word-count check is skipped. Short follow-ups in real conversations
+// ("what about X?" → "Try Y") are exactly the case where context-aware analysis
+// matters most; gating them out by current-turn length defeats the purpose.
+// Code and factual checks still run — they're about the current turn's *type*
+// and shouldn't be bypassed by prior context.
+export function evaluateTriggerGate(
+  prompt: string,
+  response: string,
+  hasContext = false
+): TriggerGateResult {
+  if (!hasContext && countWords(response) < WORD_COUNT_THRESHOLD) {
     return { skip: true, reason: "trivial" };
   }
   if (codeFenceFraction(response) > CODE_THRESHOLD) {

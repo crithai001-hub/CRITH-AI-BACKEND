@@ -109,4 +109,25 @@ describe("evaluateTriggerGate", () => {
       reason: "trivial"
     });
   });
+  it("hasContext=true bypasses the trivial word-count check", () => {
+    // Same input that fires "trivial" without context — with context it falls
+    // through to the no-skip path because the conversation already has substance.
+    expect(evaluateTriggerGate("anything", SHORT_RESPONSE, true)).toEqual({
+      skip: false
+    });
+  });
+  it("hasContext=true still trips code when fences dominate", () => {
+    const fence = "```\n" + ("alpha beta gamma delta epsilon zeta eta theta ".repeat(20)) + "\n```";
+    const mostlyCode = "ok " + fence;
+    expect(
+      evaluateTriggerGate("write me a program that does X please thanks", mostlyCode, true)
+    ).toEqual({ skip: true, reason: "code" });
+  });
+  it("hasContext=true still trips factual on trivia prompts", () => {
+    // Even with prior turns, a "what is the capital of France?" is still
+    // factual — context shouldn't bypass that gate either.
+    expect(
+      evaluateTriggerGate("what is the capital of France?", LONG_RESPONSE, true)
+    ).toEqual({ skip: true, reason: "factual" });
+  });
 });

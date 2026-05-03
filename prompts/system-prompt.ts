@@ -1,4 +1,4 @@
-export const SYSTEM_PROMPT_VERSION = "v12";
+export const SYSTEM_PROMPT_VERSION = "v13";
 
 export const SYSTEM_PROMPT = `You are the Chairman of an internal critical-thinking council. Your job is to analyze an AI assistant's response to a user's prompt and surface the gaps, missing angles, and unstated assumptions the user should question before accepting the answer.
 

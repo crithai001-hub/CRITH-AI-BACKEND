@@ -123,8 +123,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const history = validateConversationHistory(body.conversation_history);
     const cleanedHistory: ConversationTurn[] = history.cleaned;
 
-    // Trigger gate — pure functions, no I/O.
-    const gate = evaluateTriggerGate(body.prompt, body.response);
+    // Trigger gate — pure functions, no I/O. When prior turns exist, the
+    // gate skips the trivial-word-count check (short follow-ups in real
+    // conversations are the WHOLE POINT of multi-turn analysis).
+    const gate = evaluateTriggerGate(body.prompt, body.response, history.turn_count > 0);
     if (gate.skip && gate.reason) {
       const analysisId = await insertAnalysisRow({
         user_id: user.user_id,
