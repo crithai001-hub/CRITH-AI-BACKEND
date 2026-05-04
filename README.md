@@ -248,25 +248,88 @@ update user_usage set response_analyses = 0
 where user_id = '<uuid>' and month_key = to_char(now(), 'YYYY-MM');
 ```
 
+## Claim verification
+
+The analyzer runs two prompts in parallel on every non-gated request:
+
+1. **Validator** (`prompts/system-prompt.ts`, `SYSTEM_PROMPT_VERSION`) — gap-spotting, returns `validations[]`.
+2. **Claim extractor** (`prompts/claim-extractor-prompt.ts`, `CLAIM_EXTRACTOR_VERSION`) — surfaces verifiable factual claims, returns `verifiable_claims[]`.
+
+Both Haiku calls are dispatched via `Promise.allSettled`. If one fails, the other's results still ship (logged but non-fatal). If both fail, the request returns 500. The two calls share a single quota slot.
+
+The success payload includes:
+
+```ts
+{
+  skip: false,
+  validations: Validation[],
+  verifiable_claims: VerifiableClaim[],
+  analysis_id: string,
+  prompt_versions: { validator: "v17", claim_extractor: "v1" }
+}
+```
+
+### On-demand verification
+
+`POST /api/verify-claim` body:
+
+```ts
+{ analysis_id: string; claim_index: number }
+```
+
+Looks up the corresponding claim from `verifiable_claims`, runs a Brave Search query, asks Haiku for a verdict (`confirmed | contradicted | inconclusive | error`). Result + evidence + source URLs are persisted to `claim_verifications`.
+
+### Local setup
+
+Add to `.env.local`:
+
+```
+BRAVE_API_KEY=<your key>
+```
+
+Sign up for a free Brave Search API key at https://api.search.brave.com (2000 queries/month). Verifications and analyses share the same monthly per-user quota counter (`response_analyses` in `user_usage`).
+
+### Quota and cost notes
+
+- Free tier ceiling is 2000 Brave queries / month. No automatic backoff yet — watch logs for `[brave-search] non-2xx { status: 429 }`.
+- Each verify call costs: 1 Brave query + 1 Haiku call (max 512 output tokens, T=0.1). Roughly $0.001 per verification at current pricing.
+
+### Monitoring
+
+```sql
+select verdict, count(*) from claim_verifications group by verdict;
+```
+
+Dropped-claim diagnostics live in logs only — grep deployments for `[claim-extractor] dropping claim`.
+
 ## Project layout
 
 ```
-api/                 — Vercel serverless function handlers
+api/                       — Vercel serverless function handlers
   analyze-response.ts
   events.ts
-lib/                 — shared helpers
-  auth.ts            — Supabase JWT validation
-  claude.ts          — Anthropic client + analyzer
-  cors.ts            — CORS regex + preflight
-  quota.ts           — atomic monthly upsert (race-condition note inside)
-  supabase.ts        — anon + service-role clients
-  triggers.ts        — pure-function trigger gate
+  explain-provocation.ts
+  verify-claim.ts
+lib/                       — shared helpers
+  auth.ts                  — Supabase JWT validation
+  brave-search.ts          — Brave Search REST client
+  claim-extractor.ts       — Haiku claim-extractor wrapper + parser
+  claude.ts                — Anthropic client + validator analyzer
+  cors.ts                  — CORS regex + preflight
+  explainer.ts             — provocation explainer
+  quota.ts                 — atomic monthly upsert (race-condition note inside)
+  supabase.ts              — anon + service-role clients
+  triggers.ts              — pure-function trigger gate
+  verifier.ts              — Haiku verifier wrapper + parser
 prompts/
-  system-prompt.ts   — SYSTEM_PROMPT + SYSTEM_PROMPT_VERSION
-types/index.ts       — shared TS types
-supabase/migrations/
-  0001_initial.sql   — tables, view, RLS
-tests/               — Vitest unit tests (triggers, quota.monthKey)
-test-curl.sh         — 4 sanity-check cases
+  system-prompt.ts         — SYSTEM_PROMPT + SYSTEM_PROMPT_VERSION
+  claim-extractor-prompt.ts — CLAIM_EXTRACTOR_PROMPT + version
+  verifier-prompt.ts       — VERIFIER_PROMPT + version
+  explainer-system-prompt.ts
+types/index.ts             — shared TS types
+supabase/migrations/       — 0001 → 0006
+tests/                     — Vitest unit tests (parsers, triggers, quota)
+test-curl.sh               — 10 sanity-check cases (analyzer + verify)
 docs/superpowers/specs/2026-04-29-response-analyzer-design.md
+docs/superpowers/plans/2026-05-03-claim-verification.md
 ```
