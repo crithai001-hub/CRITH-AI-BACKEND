@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { SYSTEM_PROMPT, buildUserMessage } from "../prompts/system-prompt.js";
+import { recoverAnchor } from "./anchor.js";
 import type {
   ClaudeAnalysisResult,
   ClaudeUsage,
@@ -136,19 +137,31 @@ function validateAnalysis(
     // Anchor MUST be a verbatim substring of the response. The extension renders
     // each underline by calling response.includes(anchored_to); if that returns
     // false the validation silently has no UI anchor.
-    if (!aiResponse.includes(v.anchored_to)) {
-      console.warn("[claude] dropping validation: anchor not verbatim", {
+    //
+    // If the model paraphrased (concatenated list items, swapped en-dash for
+    // hyphen, etc.), try to recover the closest verbatim slice. Recovery only
+    // returns null when no usable substring exists; in that case we drop.
+    const recovered = recoverAnchor(v.anchored_to, aiResponse);
+    if (recovered === null) {
+      console.warn("[claude] dropping validation: anchor not recoverable", {
         lens: v.lens,
         anchored_to_preview: v.anchored_to.slice(0, 120)
       });
       continue;
+    }
+    if (recovered !== v.anchored_to) {
+      console.info("[claude] anchor recovered", {
+        lens: v.lens,
+        original_preview: v.anchored_to.slice(0, 120),
+        recovered_preview: recovered.slice(0, 120)
+      });
     }
 
     validations.push({
       problem: v.problem,
       follow_up_prompt: v.follow_up_prompt,
       lens: v.lens as Validation["lens"],
-      anchored_to: v.anchored_to,
+      anchored_to: recovered,
       severity: v.severity as Validation["severity"]
     });
   }
