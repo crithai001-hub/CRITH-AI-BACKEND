@@ -3,6 +3,7 @@ import {
   CLAIM_EXTRACTOR_PROMPT,
   buildClaimExtractorUserMessage
 } from "../prompts/claim-extractor-prompt.js";
+import { recoverAnchor } from "./anchor.js";
 import type {
   ClaimExtractorResult,
   ClaudeUsage,
@@ -113,16 +114,29 @@ export function parseClaimExtractorResponse(
     if (!VALID_RISKS.has(c.risk)) continue;
     if (c.claim.length === 0 || c.claim.length > 400) continue;
     if (c.why_verify.length === 0 || c.why_verify.length > 200) continue;
-    if (!aiResponse.includes(c.anchored_to)) {
-      console.warn("[claim-extractor] dropping claim: anchor not verbatim", {
+
+    // Anchor recovery: same discipline as the validator. Keep if verbatim;
+    // otherwise recover the closest verbatim slice; only drop if no usable
+    // substring exists.
+    const recovered = recoverAnchor(c.anchored_to, aiResponse);
+    if (recovered === null) {
+      console.warn("[claim-extractor] dropping claim: anchor not recoverable", {
         claim_type: c.claim_type,
         anchored_to_preview: c.anchored_to.slice(0, 120)
       });
       continue;
     }
+    if (recovered !== c.anchored_to) {
+      console.info("[claim-extractor] anchor recovered", {
+        claim_type: c.claim_type,
+        original_preview: c.anchored_to.slice(0, 120),
+        recovered_preview: recovered.slice(0, 120)
+      });
+    }
+
     claims.push({
       claim: c.claim,
-      anchored_to: c.anchored_to,
+      anchored_to: recovered,
       claim_type: c.claim_type as VerifiableClaim["claim_type"],
       why_verify: c.why_verify,
       risk: c.risk as VerifiableClaim["risk"]
