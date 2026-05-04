@@ -4,15 +4,19 @@ import { getUserFromRequest } from "../lib/auth.js";
 import { evaluateTriggerGate } from "../lib/triggers.js";
 import { incrementResponseAnalysesQuota } from "../lib/quota.js";
 import { analyzeResponse, truncateResponse } from "../lib/claude.js";
+import { extractClaims } from "../lib/claim-extractor.js";
 import { supabaseService } from "../lib/supabase.js";
 import { validateConversationHistory } from "../lib/validate-history.js";
 import { SYSTEM_PROMPT_VERSION } from "../prompts/system-prompt.js";
+import { CLAIM_EXTRACTOR_VERSION } from "../prompts/claim-extractor-prompt.js";
 import type {
   AnalyzeRequestBody,
   ConversationTurn,
   Platform,
+  PromptVersions,
   SkipReason,
-  Validation
+  Validation,
+  VerifiableClaim
 } from "../types/index.js";
 
 const VALID_PLATFORMS: ReadonlySet<Platform> = new Set([
@@ -52,12 +56,16 @@ interface InsertRowInput {
   skipped: boolean;
   skip_reason: SkipReason | null;
   validations: Validation[];
+  verifiable_claims: VerifiableClaim[];
   tokens_in: number;
   tokens_out: number;
   cached_tokens: number;
   latency_ms: number;
   history_turn_count: number;
   history_chars: number;
+  claim_extractor_version: string | null;
+  claim_extractor_tokens_in: number | null;
+  claim_extractor_tokens_out: number | null;
 }
 
 async function insertAnalysisRow(input: InsertRowInput): Promise<string | null> {
@@ -81,6 +89,10 @@ async function insertAnalysisRow(input: InsertRowInput): Promise<string | null> 
       // v14+ schema. Old `provocations` column stays nullable for legacy rows;
       // we no longer write to it. New writes go to `validations` only.
       validations: input.validations,
+      verifiable_claims: input.verifiable_claims,
+      claim_extractor_version: input.claim_extractor_version,
+      claim_extractor_tokens_in: input.claim_extractor_tokens_in,
+      claim_extractor_tokens_out: input.claim_extractor_tokens_out,
       // Stored truncated to match what the analyzer actually saw — keeps any
       // downstream consumer's view of the response consistent with the analyzer's.
       original_prompt: input.body.prompt,
@@ -136,12 +148,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         skipped: true,
         skip_reason: gate.reason,
         validations: [],
+        verifiable_claims: [],
         tokens_in: 0,
         tokens_out: 0,
         cached_tokens: 0,
         latency_ms: 0,
         history_turn_count: history.turn_count,
-        history_chars: history.char_count
+        history_chars: history.char_count,
+        claim_extractor_version: null,
+        claim_extractor_tokens_in: null,
+        claim_extractor_tokens_out: null
       });
       res.status(200).json({
         skip: true,
@@ -161,12 +177,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         skipped: true,
         skip_reason: "quota_exceeded",
         validations: [],
+        verifiable_claims: [],
         tokens_in: 0,
         tokens_out: 0,
         cached_tokens: 0,
         latency_ms: 0,
         history_turn_count: history.turn_count,
-        history_chars: history.char_count
+        history_chars: history.char_count,
+        claim_extractor_version: null,
+        claim_extractor_tokens_in: null,
+        claim_extractor_tokens_out: null
       });
       res.status(429).json({
         error: "quota_exceeded",
@@ -176,57 +196,82 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    // Claude call.
+    // Parallel Haiku calls: validator (gap-spotting) + claim extractor (fact-checking).
+    // Promise.allSettled so one failure doesn't kill the other. Quota was already
+    // incremented above; both calls share that single quota slot.
     const start = Date.now();
-    let result;
-    try {
-      result = await analyzeResponse(body.prompt, body.response, cleanedHistory);
-    } catch (err) {
-      console.error("[analyze-response] claude error", err);
-      const latency_ms = Date.now() - start;
+    const [validatorSettled, extractorSettled] = await Promise.allSettled([
+      analyzeResponse(body.prompt, body.response, cleanedHistory),
+      extractClaims(body.prompt, body.response)
+    ]);
+    const latency_ms = Date.now() - start;
+
+    if (validatorSettled.status === "rejected") {
+      console.error("[analyze-response] validator rejected", validatorSettled.reason);
+    } else if (!validatorSettled.value.ok) {
+      console.warn("[analyze-response] validator parse_error");
+    }
+
+    if (extractorSettled.status === "rejected") {
+      console.error("[analyze-response] extractor rejected", extractorSettled.reason);
+    } else if (!extractorSettled.value.ok) {
+      console.warn("[analyze-response] extractor parse_error");
+    }
+
+    const validatorOk = validatorSettled.status === "fulfilled" && validatorSettled.value.ok;
+    const extractorOk = extractorSettled.status === "fulfilled" && extractorSettled.value.ok;
+
+    // Both failed — full failure. Persist whatever usage we got and 500.
+    if (!validatorOk && !extractorOk) {
+      const validatorUsage =
+        validatorSettled.status === "fulfilled" ? validatorSettled.value.usage : null;
+      const extractorUsage =
+        extractorSettled.status === "fulfilled" ? extractorSettled.value.usage : null;
       await insertAnalysisRow({
         user_id: user.user_id,
         body,
         skipped: true,
-        skip_reason: "claude_error",
+        skip_reason: validatorSettled.status === "rejected" ? "claude_error" : "parse_error",
         validations: [],
-        tokens_in: 0,
-        tokens_out: 0,
-        cached_tokens: 0,
+        verifiable_claims: [],
+        tokens_in: validatorUsage?.tokens_in ?? 0,
+        tokens_out: validatorUsage?.tokens_out ?? 0,
+        cached_tokens: validatorUsage?.cached_tokens ?? 0,
         latency_ms,
         history_turn_count: history.turn_count,
-        history_chars: history.char_count
+        history_chars: history.char_count,
+        claim_extractor_version: CLAIM_EXTRACTOR_VERSION,
+        claim_extractor_tokens_in: extractorUsage?.tokens_in ?? null,
+        claim_extractor_tokens_out: extractorUsage?.tokens_out ?? null
       });
       res.status(500).json({ error: "internal" });
       return;
     }
-    const latency_ms = Date.now() - start;
 
-    if (!result.ok) {
-      // Parse error — quota stays incremented.
-      const analysisId = await insertAnalysisRow({
-        user_id: user.user_id,
-        body,
-        skipped: true,
-        skip_reason: "parse_error",
-        validations: [],
-        tokens_in: result.usage.tokens_in,
-        tokens_out: result.usage.tokens_out,
-        cached_tokens: result.usage.cached_tokens,
-        latency_ms,
-        history_turn_count: history.turn_count,
-        history_chars: history.char_count
-      });
-      res.status(200).json({
-        skip: true,
-        reason: "parse_error",
-        analysis_id: analysisId ?? ""
-      });
-      return;
-    }
+    // At least one succeeded — pull usable results.
+    const validatorResult =
+      validatorSettled.status === "fulfilled" && validatorSettled.value.ok
+        ? validatorSettled.value
+        : null;
+    const extractorResult =
+      extractorSettled.status === "fulfilled" && extractorSettled.value.ok
+        ? extractorSettled.value
+        : null;
 
-    const validations: Validation[] = result.result.skip ? [] : result.result.validations;
-    const skipped = result.result.skip;
+    const validations: Validation[] =
+      validatorResult && !validatorResult.result.skip ? validatorResult.result.validations : [];
+    const verifiable_claims: VerifiableClaim[] =
+      extractorResult && !extractorResult.result.skip
+        ? extractorResult.result.verifiable_claims
+        : [];
+
+    const validatorSkipped = validatorResult ? validatorResult.result.skip : true;
+    // Top-level skip only when validator skipped AND no claims to surface.
+    // Extension treats skip:true as "no card"; if claims are present we want it rendered.
+    const skipped = validatorSkipped && verifiable_claims.length === 0;
+
+    const validatorUsage = validatorResult?.usage;
+    const extractorUsage = extractorResult?.usage;
 
     const analysisId = await insertAnalysisRow({
       user_id: user.user_id,
@@ -234,12 +279,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       skipped,
       skip_reason: skipped ? "trivial" : null,
       validations,
-      tokens_in: result.usage.tokens_in,
-      tokens_out: result.usage.tokens_out,
-      cached_tokens: result.usage.cached_tokens,
+      verifiable_claims,
+      tokens_in: validatorUsage?.tokens_in ?? 0,
+      tokens_out: validatorUsage?.tokens_out ?? 0,
+      cached_tokens: validatorUsage?.cached_tokens ?? 0,
       latency_ms,
       history_turn_count: history.turn_count,
-      history_chars: history.char_count
+      history_chars: history.char_count,
+      claim_extractor_version: CLAIM_EXTRACTOR_VERSION,
+      claim_extractor_tokens_in: extractorUsage?.tokens_in ?? null,
+      claim_extractor_tokens_out: extractorUsage?.tokens_out ?? null
     });
 
     if (!analysisId) {
@@ -247,11 +296,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
+    const prompt_versions: PromptVersions = {
+      validator: SYSTEM_PROMPT_VERSION,
+      claim_extractor: CLAIM_EXTRACTOR_VERSION
+    };
+
     if (skipped) {
       res.status(200).json({ skip: true, reason: "trivial", analysis_id: analysisId });
-    } else {
-      res.status(200).json({ skip: false, validations, analysis_id: analysisId });
+      return;
     }
+
+    res.status(200).json({
+      skip: false,
+      validations,
+      verifiable_claims,
+      analysis_id: analysisId,
+      prompt_versions
+    });
   } catch (err) {
     console.error("[analyze-response] unhandled", err);
     res.status(500).json({ error: "internal" });

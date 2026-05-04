@@ -22,7 +22,7 @@ describe("parseClaimExtractorResponse", () => {
     expect(result).not.toBeNull();
     expect(result!.skip).toBe(false);
     expect(result!.verifiable_claims).toHaveLength(1);
-    expect(result!.verifiable_claims[0].claim_type).toBe("statistic");
+    expect(result!.verifiable_claims[0]?.claim_type).toBe("statistic");
   });
 
   it("drops claims whose anchored_to is not a substring of the response", () => {
