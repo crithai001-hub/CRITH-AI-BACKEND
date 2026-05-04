@@ -87,7 +87,13 @@ export interface ClaudeAnalysisResult {
 
 export type AnalyzeResponse =
   | { skip: true; reason: SkipReason; analysis_id: string }
-  | { skip: false; validations: Validation[]; analysis_id: string }
+  | {
+      skip: false;
+      validations: Validation[];
+      verifiable_claims: VerifiableClaim[];
+      analysis_id: string;
+      prompt_versions: PromptVersions;
+    }
   | { error: "unauthorized" }
   | { error: "quota_exceeded"; limit: number; used: number }
   | { error: "internal" }
@@ -117,4 +123,64 @@ export interface ClaudeUsage {
   tokens_in: number;
   tokens_out: number;
   cached_tokens: number;
+}
+
+// Claim extractor (parallel to validator). Output of prompts/claim-extractor-prompt.ts.
+export type ClaimType =
+  | "statistic"
+  | "citation"
+  | "person_or_role"
+  | "date"
+  | "product_or_pricing"
+  | "current_state"
+  | "quote"
+  | "technical_fact";
+
+export type Risk = "high" | "medium" | "low";
+
+export interface VerifiableClaim {
+  claim: string;
+  anchored_to: string;
+  claim_type: ClaimType;
+  why_verify: string;
+  risk: Risk;
+}
+
+export interface ClaimExtractorResult {
+  skip: boolean;
+  verifiable_claims: VerifiableClaim[];
+}
+
+// Verify endpoint.
+export type Verdict = "confirmed" | "contradicted" | "inconclusive" | "error";
+
+export interface VerifyRequestBody {
+  analysis_id: string;
+  claim_index: number;
+}
+
+export type VerifyResponse =
+  | {
+      verdict: Verdict;
+      evidence_summary: string;
+      source_urls: string[];
+      verification_id: string;
+    }
+  | { error: "unauthorized" }
+  | { error: "not_found" }
+  | { error: "quota_exceeded"; limit: number; used: number }
+  | { error: "internal" }
+  | { error: "bad_request"; message: string };
+
+// Brave Search client.
+export interface BraveSearchResult {
+  title: string;
+  snippet: string;
+  url: string;
+}
+
+// Augmented analyze response — additive only; old extension code stays compatible.
+export interface PromptVersions {
+  validator: string;
+  claim_extractor: string;
 }
