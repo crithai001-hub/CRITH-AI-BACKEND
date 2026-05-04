@@ -196,5 +196,60 @@ curl_case "8. v14 follow-up quality / pricing decision" '{
   "message_id": "test-msg-8"
 }'
 
+# ---------------------------------------------------------------------------
+# Case 9 — Claim extraction. Response with multiple verifiable claims:
+# a fabricated-looking citation, a current-state role claim, a date.
+# Expectation: skip=false, verifiable_claims has at least 2 entries with
+# verbatim anchored_to substrings, plus prompt_versions in payload.
+# Saves analysis_id for case 10.
+# ---------------------------------------------------------------------------
+echo
+echo "=== 9. claim extraction / OpenAI leadership ==="
+CASE9_BODY='{
+  "prompt": "Tell me about the recent OpenAI leadership change.",
+  "response": "In March 2024, Sam Altman returned as CEO after a brief departure. According to a 2024 Bloomberg report, the company has now reached 200 million weekly active users on ChatGPT. The CTO position is held by Mira Murati.",
+  "platform": "chatgpt",
+  "conversation_id": "test-conv-9",
+  "message_id": "test-msg-9"
+}'
+
+CASE9_RESPONSE=$(curl -sS -X POST "$BASE_URL/api/analyze-response" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TEST_TOKEN" \
+  -H "Origin: chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef" \
+  -d "$CASE9_BODY")
+
+echo "--- analyze response ---"
+echo "$CASE9_RESPONSE" | (command -v jq >/dev/null && jq . || cat)
+
+CASE9_ANALYSIS_ID=$(echo "$CASE9_RESPONSE" | (command -v jq >/dev/null \
+  && jq -r '.analysis_id // empty' \
+  || sed -n 's/.*"analysis_id":"\([^"]*\)".*/\1/p'))
+
+# ---------------------------------------------------------------------------
+# Case 10 — Verify a high-risk claim from case 9. Picks the highest-risk
+# verifiable_claim's index and POSTs to /api/verify-claim.
+# Expectation: 200 with {verdict, evidence_summary, source_urls, verification_id}.
+# ---------------------------------------------------------------------------
+if [[ -n "$CASE9_ANALYSIS_ID" && "$CASE9_ANALYSIS_ID" != "null" ]]; then
+  CLAIM_INDEX=$(echo "$CASE9_RESPONSE" | (command -v jq >/dev/null \
+    && jq -r '
+      (.verifiable_claims // [])
+      | to_entries
+      | map(select(.value.risk == "high"))
+      | (.[0].key // 0)' \
+    || echo 0))
+  echo
+  echo "=== 10. verify-claim (analysis_id=$CASE9_ANALYSIS_ID, claim_index=$CLAIM_INDEX) ==="
+  curl -sS -X POST "$BASE_URL/api/verify-claim" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TEST_TOKEN" \
+    -H "Origin: chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef" \
+    -d "{\"analysis_id\":\"$CASE9_ANALYSIS_ID\",\"claim_index\":$CLAIM_INDEX}" \
+    | (command -v jq >/dev/null && jq . || cat)
+else
+  echo "Case 10 skipped — no analysis_id from case 9."
+fi
+
 echo
 echo "Done. Inspect output above. For each case verify the skip/reason or validations match expectations."
