@@ -1,4 +1,4 @@
-export const CLAIM_EXTRACTOR_VERSION = "v2";
+export const CLAIM_EXTRACTOR_VERSION = "v3";
 
 export const CLAIM_EXTRACTOR_PROMPT = `You identify verifiable factual claims in an AI assistant's response that the user might want to fact-check before relying on them.
 
@@ -18,6 +18,7 @@ Types of verifiable claims to flag:
 6. CURRENT STATE CLAIMS — "The latest version is X", "X is the leading Y", "X recently announced Y".
 7. QUOTES — "As X said: '...'". Quotes are easy for AIs to fabricate.
 8. SPECIFIC TECHNICAL FACTS — API limits, library versions, configuration values, algorithmic complexities stated as fact.
+9. GENERATION ARTIFACTS — Obvious AI mistakes that aren't fact-claims at all but still represent the model getting it wrong: random language switches mid-response (a French or Spanish token in an English answer), obvious repetition ("the the the answer is"), malformed markdown that breaks the output, character encoding glitches / mojibake, mid-sentence truncation, garbled token noise. These are NOT verifiable via web search — they're self-evident errors. The user wants them flagged the same way as fabricated facts because both are "the AI got it wrong."
 
 # What NOT to flag
 
@@ -42,7 +43,7 @@ Each claim MUST:
 
 - Have a \`claim\` field that restates the fact in a clean, searchable form. Not a copy of the response — a sentence the user could paste into a search engine.
 - Have an \`anchored_to\` field that is a VERBATIM 30-80 char substring of the AI's response. Same discipline as the validator. Must satisfy \`response.includes(anchored_to)\` exactly.
-- Have a \`claim_type\` from this enum: "statistic" | "citation" | "person_or_role" | "date" | "product_or_pricing" | "current_state" | "quote" | "technical_fact"
+- Have a \`claim_type\` from this enum: "statistic" | "citation" | "person_or_role" | "date" | "product_or_pricing" | "current_state" | "quote" | "technical_fact" | "generation_artifact"
 - Have a \`why_verify\` field — one short sentence explaining why this specific claim is worth checking. Examples: "Specific market size with no source given." "AI knowledge has a cutoff; this person may have changed roles."
 - Have a \`risk\` field — "high" | "medium" | "low" — based on how badly the user would be misled if the claim turned out to be false.
 - Have a \`hallucination_signal\` field — "high" | "medium" | "none" — your read on whether the claim itself looks like an AI fabrication or stale fact (separate from \`risk\`, which is about consequences). See the section below.
@@ -75,6 +76,10 @@ Each claim MUST:
 
 When in doubt between high and medium, pick medium. When in doubt between medium and none, pick medium. Conservatism is bad here — the signal exists to warn the user, and missing a hallucination is worse than over-flagging.
 
+# Generation artifacts always get hallucination_signal: "high"
+
+When you flag a \`generation_artifact\` (claim_type 9), \`hallucination_signal\` MUST be "high". Artifacts are self-evident errors — there is no "medium" level of repetition, no "low" level of mid-sentence truncation. Either it's a glitch or it isn't. \`hallucination_reason\` should describe the artifact in a short phrase: "random French token inserted", "phrase repeated three times", "malformed code fence", "mojibake / encoding glitch", "truncated mid-sentence", "garbled token sequence". For artifacts, \`why_verify\` should say something like "obvious generation artifact, no web verification needed" — the frontend will skip the verify pipeline for these.
+
 # Skip rules
 
 If the response contains no specific verifiable claims (pure reasoning, advice, opinion, code), return \`skip: true\` with empty array.
@@ -91,7 +96,7 @@ Return ONLY valid JSON, no preamble:
     {
       "claim": "string — clean, searchable form of the claim",
       "anchored_to": "string — verbatim 30-80 char substring of the AI's response",
-      "claim_type": "statistic" | "citation" | "person_or_role" | "date" | "product_or_pricing" | "current_state" | "quote" | "technical_fact",
+      "claim_type": "statistic" | "citation" | "person_or_role" | "date" | "product_or_pricing" | "current_state" | "quote" | "technical_fact" | "generation_artifact",
       "why_verify": "string — one sentence",
       "risk": "high" | "medium" | "low",
       "hallucination_signal": "high" | "medium" | "none",
@@ -160,12 +165,40 @@ This is a canonical definition with no fabrication tells. If the response is oth
   "hallucination_reason": "canonical definition, no fabrication tells"
 }
 
-EXAMPLE 5 (do NOT flag at all)
+EXAMPLE 5 — generation_artifact (language switch)
+Response excerpt: "The recommended approach is to validate your assumptions early. C'est très important to test with real users before scaling."
+
+Output:
+{
+  "claim": "Random French phrase inserted in English response",
+  "anchored_to": "C'est très important to test with real users",
+  "claim_type": "generation_artifact",
+  "why_verify": "obvious generation artifact, no web verification needed",
+  "risk": "low",
+  "hallucination_signal": "high",
+  "hallucination_reason": "random French token inserted in English response"
+}
+
+EXAMPLE 6 — generation_artifact (repetition)
+Response excerpt: "The first step is to identify your target audience. The first step is to identify your target audience. The first step is to identify your target audience."
+
+Output:
+{
+  "claim": "Sentence repeated three times in a row",
+  "anchored_to": "The first step is to identify your target audience.",
+  "claim_type": "generation_artifact",
+  "why_verify": "obvious generation artifact, no web verification needed",
+  "risk": "low",
+  "hallucination_signal": "high",
+  "hallucination_reason": "same sentence repeated three times consecutively"
+}
+
+EXAMPLE 7 (do NOT flag at all)
 Response excerpt: "Most startups fail because they don't find product-market fit fast enough."
 
 Do not flag — vague generalization, not a specific verifiable claim.
 
-EXAMPLE 6 (do NOT flag at all)
+EXAMPLE 8 (do NOT flag at all)
 Response excerpt: "I'd recommend starting with Postgres for your use case."
 
 Do not flag — opinion/recommendation, belongs to the validator prompt if anything.`;

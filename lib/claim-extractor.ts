@@ -35,7 +35,8 @@ const VALID_CLAIM_TYPES = new Set([
   "product_or_pricing",
   "current_state",
   "quote",
-  "technical_fact"
+  "technical_fact",
+  "generation_artifact"
 ]);
 const VALID_RISKS = new Set(["high", "medium", "low"]);
 const VALID_HALLUCINATION_SIGNALS = new Set(["high", "medium", "none"]);

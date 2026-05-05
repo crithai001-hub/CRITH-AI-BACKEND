@@ -117,6 +117,30 @@ describe("parseClaimExtractorResponse", () => {
     expect(parseClaimExtractorResponse(JSON.stringify({}), RESPONSE)).toBeNull();
   });
 
+  it("accepts generation_artifact claim_type and preserves it", () => {
+    const ARTIFACT_RESPONSE =
+      "The recommended approach is to validate your assumptions early. C'est très important to test with real users before scaling.";
+    const json = JSON.stringify({
+      skip: false,
+      verifiable_claims: [
+        {
+          claim: "Random French phrase inserted in English response",
+          anchored_to: "C'est très important to test with real users",
+          claim_type: "generation_artifact",
+          why_verify: "obvious generation artifact, no web verification needed",
+          risk: "low",
+          hallucination_signal: "high",
+          hallucination_reason: "random French token inserted in English response"
+        }
+      ]
+    });
+    const result = parseClaimExtractorResponse(json, ARTIFACT_RESPONSE);
+    expect(result).not.toBeNull();
+    expect(result!.verifiable_claims).toHaveLength(1);
+    expect(result!.verifiable_claims[0]?.claim_type).toBe("generation_artifact");
+    expect(result!.verifiable_claims[0]?.hallucination_signal).toBe("high");
+  });
+
   it("caps at 3 claims even if model returns more", () => {
     const claim = {
       claim: "x",

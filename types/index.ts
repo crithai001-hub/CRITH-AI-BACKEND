@@ -135,7 +135,8 @@ export type ClaimType =
   | "product_or_pricing"
   | "current_state"
   | "quote"
-  | "technical_fact";
+  | "technical_fact"
+  | "generation_artifact";
 
 export type Risk = "high" | "medium" | "low";
 
