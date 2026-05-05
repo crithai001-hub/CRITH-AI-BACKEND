@@ -100,3 +100,19 @@ export function recoverAnchor(anchor: string, response: string): string | null {
   if (!recovered || recovered.length < ANCHOR_MIN_LEN) return null;
   return recovered;
 }
+
+// Anchors are verbatim substrings of the response. Two anchors "overlap" if
+// their character spans in the response intersect. This is used to dedup
+// validations against verifiable_claims — when a validator and the claim
+// extractor both flag the same span, the claim wins (factual wrongness is
+// more specific than a reasoning gap on the same content).
+export function anchorsOverlap(response: string, a: string, b: string): boolean {
+  if (a.length === 0 || b.length === 0) return false;
+  const aStart = response.indexOf(a);
+  if (aStart === -1) return false;
+  const bStart = response.indexOf(b);
+  if (bStart === -1) return false;
+  const aEnd = aStart + a.length;
+  const bEnd = bStart + b.length;
+  return aStart < bEnd && bStart < aEnd;
+}

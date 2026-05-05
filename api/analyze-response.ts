@@ -5,6 +5,7 @@ import { evaluateTriggerGate } from "../lib/triggers.js";
 import { incrementResponseAnalysesQuota } from "../lib/quota.js";
 import { analyzeResponse, truncateResponse } from "../lib/claude.js";
 import { extractClaims } from "../lib/claim-extractor.js";
+import { anchorsOverlap } from "../lib/anchor.js";
 import { supabaseService } from "../lib/supabase.js";
 import { validateConversationHistory } from "../lib/validate-history.js";
 import { SYSTEM_PROMPT_VERSION } from "../prompts/system-prompt.js";
@@ -258,12 +259,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         ? extractorSettled.value
         : null;
 
-    const validations: Validation[] =
+    const rawValidations: Validation[] =
       validatorResult && !validatorResult.result.skip ? validatorResult.result.validations : [];
     const verifiable_claims: VerifiableClaim[] =
       extractorResult && !extractorResult.result.skip
         ? extractorResult.result.verifiable_claims
         : [];
+
+    // Dedup: drop any validation whose anchor span overlaps with a claim's
+    // anchor span. The claim wins — factual wrongness is more specific than
+    // a reasoning gap on the same content. Belt-and-suspenders for v19's
+    // prompt-level rule that forbids the validator from anchoring on facts.
+    const validations: Validation[] = rawValidations.filter((v) => {
+      const overlap = verifiable_claims.find((c) =>
+        anchorsOverlap(body.response, v.anchored_to, c.anchored_to)
+      );
+      if (overlap) {
+        console.info("[analyze-response] dropping validation: overlaps claim anchor", {
+          lens: v.lens,
+          validation_anchor_preview: v.anchored_to.slice(0, 80),
+          claim_anchor_preview: overlap.anchored_to.slice(0, 80)
+        });
+        return false;
+      }
+      return true;
+    });
 
     const validatorSkipped = validatorResult ? validatorResult.result.skip : true;
     // Top-level skip only when validator skipped AND no claims to surface.

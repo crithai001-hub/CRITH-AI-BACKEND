@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { recoverAnchor, ANCHOR_MIN_LEN } from "../lib/anchor.js";
+import { anchorsOverlap, recoverAnchor, ANCHOR_MIN_LEN } from "../lib/anchor.js";
 
 describe("recoverAnchor", () => {
   it("returns the anchor unchanged when it is already a verbatim substring", () => {
@@ -86,5 +86,51 @@ describe("recoverAnchor", () => {
 
   it("returns null when the anchor has no overlap with the response at all", () => {
     expect(recoverAnchor("totally unrelated phrase", "different text entirely")).toBeNull();
+  });
+});
+
+describe("anchorsOverlap", () => {
+  const RESPONSE =
+    "Pricing should anchor at $97/month based on what the audience expects from a Chrome extension targeting small startup founders.";
+
+  it("returns true when one anchor is a substring of the other", () => {
+    expect(
+      anchorsOverlap(
+        RESPONSE,
+        "Pricing should anchor at $97/month based on what",
+        "$97/month based on what"
+      )
+    ).toBe(true);
+  });
+
+  it("returns true when two spans intersect partially", () => {
+    expect(
+      anchorsOverlap(
+        RESPONSE,
+        "Pricing should anchor at $97/month",
+        "anchor at $97/month based on what the audience"
+      )
+    ).toBe(true);
+  });
+
+  it("returns false when spans are disjoint in the response", () => {
+    expect(
+      anchorsOverlap(
+        RESPONSE,
+        "Pricing should anchor at $97/month",
+        "small startup founders"
+      )
+    ).toBe(false);
+  });
+
+  it("returns false when one anchor is not in the response at all", () => {
+    expect(
+      anchorsOverlap(RESPONSE, "Pricing should anchor at $97/month", "unrelated string")
+    ).toBe(false);
+  });
+
+  it("returns false on empty inputs", () => {
+    expect(anchorsOverlap(RESPONSE, "", "anything")).toBe(false);
+    expect(anchorsOverlap(RESPONSE, "anything", "")).toBe(false);
   });
 });
