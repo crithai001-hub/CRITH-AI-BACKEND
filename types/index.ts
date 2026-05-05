@@ -23,6 +23,7 @@ export type SkipReason =
   | "trivial"
   | "code"
   | "factual"
+  | "deterministic_task"
   | "parse_error"
   | "quota_exceeded"
   | "claude_error";
@@ -116,7 +117,7 @@ export type EventsResponse =
 
 export interface TriggerGateResult {
   skip: boolean;
-  reason?: Extract<SkipReason, "trivial" | "code" | "factual">;
+  reason?: Extract<SkipReason, "trivial" | "code" | "factual" | "deterministic_task">;
 }
 
 export interface ClaudeUsage {

@@ -3,11 +3,25 @@ import type { TriggerGateResult } from "../types/index.js";
 const WORD_COUNT_THRESHOLD = 80;
 const CODE_THRESHOLD = 0.85;
 const FACTUAL_PROMPT_WORD_LIMIT = 8;
+const DIGIT_HEAVY_THRESHOLD = 0.08;
 
 const FACTUAL_PREFIX_RE =
   /^(what is|what's|who is|who's|define|convert|translate)\b/i;
 const ARITHMETIC_RE = /^\s*[\d+\-*/=().\s]+\??\s*$/;
 const CODE_FENCE_RE = /```[\s\S]*?```/g;
+
+// Math operators in numeric context: digit op digit, math symbols, LaTeX,
+// or a variable raised to a power (x^2, y², n³).
+const MATH_OPERATORS_IN_CONTEXT_RE =
+  /\d\s*[+\-*/=^×÷%]\s*\d|[√∑∫≈≤≥]|\\(?:sqrt|frac|sum|int|times|div)|\b[a-zA-Z]\s*[\^]\s*\d|\b[a-zA-Z][²³⁴⁵]/u;
+
+// Computational verb at the start of the prompt (imperative position).
+const COMPUTATIONAL_VERB_RE =
+  /^\s*(?:solve|calculate|compute|evaluate|simplify|derive|differentiate|integrate|factor|expand|round|estimate|multiply|divide|subtract|convert)\b/i;
+
+// Specific computational phrases regardless of position.
+const COMPUTATIONAL_PHRASE_RE =
+  /\b(?:square root|cube root|find the (?:value|root|derivative|integral|area|volume|product|sum|difference|quotient)|how many [^?]*?(?:are|is) (?:in|equal))/i;
 
 export function countWords(text: string): number {
   const trimmed = text.trim();
@@ -39,14 +53,41 @@ export function isFactualLookup(prompt: string): boolean {
   return FACTUAL_PREFIX_RE.test(trimmed);
 }
 
-// Pure trigger gate. Order: word count → code → factual. First match wins.
+export function digitFraction(s: string): number {
+  if (s.length === 0) return 0;
+  let count = 0;
+  for (const ch of s) {
+    if (ch >= "0" && ch <= "9") count++;
+  }
+  return count / s.length;
+}
+
+// Detects prompts where the user wants ONE correct answer that the AI can
+// either compute or look up — math, conversions, "solve this," etc.
+// Provocations are pointless on these: there's no reasoning to question,
+// just a computation to verify.
+//
+// At-least-2 signals required to skip. This guards against false positives
+// like "Should I use Newton's method to solve this?" (strategic question
+// containing 'solve' but with no operators or numerics in the prompt).
+export function isDeterministicTask(prompt: string, response: string): boolean {
+  let signals = 0;
+  if (MATH_OPERATORS_IN_CONTEXT_RE.test(prompt)) signals++;
+  if (COMPUTATIONAL_VERB_RE.test(prompt) || COMPUTATIONAL_PHRASE_RE.test(prompt)) signals++;
+  if (digitFraction(prompt) > DIGIT_HEAVY_THRESHOLD) signals++;
+  if (digitFraction(response) > DIGIT_HEAVY_THRESHOLD) signals++;
+  return signals >= 2;
+}
+
+// Pure trigger gate. Order: word count → code → factual → deterministic.
+// First match wins.
 //
 // hasContext (v13+): when the request includes prior conversation turns, the
 // trivial word-count check is skipped. Short follow-ups in real conversations
 // ("what about X?" → "Try Y") are exactly the case where context-aware analysis
 // matters most; gating them out by current-turn length defeats the purpose.
-// Code and factual checks still run — they're about the current turn's *type*
-// and shouldn't be bypassed by prior context.
+// Code, factual, and deterministic checks still run — they're about the
+// current turn's *type* and shouldn't be bypassed by prior context.
 export function evaluateTriggerGate(
   prompt: string,
   response: string,
@@ -60,6 +101,9 @@ export function evaluateTriggerGate(
   }
   if (isFactualLookup(prompt)) {
     return { skip: true, reason: "factual" };
+  }
+  if (isDeterministicTask(prompt, response)) {
+    return { skip: true, reason: "deterministic_task" };
   }
   return { skip: false };
 }

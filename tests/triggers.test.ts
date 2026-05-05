@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   codeFenceFraction,
   countWords,
+  digitFraction,
   evaluateTriggerGate,
+  isDeterministicTask,
   isFactualLookup
 } from "../lib/triggers.js";
 
@@ -129,5 +131,87 @@ describe("evaluateTriggerGate", () => {
     expect(
       evaluateTriggerGate("what is the capital of France?", LONG_RESPONSE, true)
     ).toEqual({ skip: true, reason: "factual" });
+  });
+
+  it("trips deterministic_task on math 'solve' prompts with a long response", () => {
+    // Operators (signal 1) + 'solve' verb (signal 2) + numerics (signal 3) → skip.
+    expect(
+      evaluateTriggerGate("Solve x^2 + 5x + 6 = 0", LONG_RESPONSE)
+    ).toEqual({ skip: true, reason: "deterministic_task" });
+  });
+
+  it("does NOT skip a strategy question that mentions 'solve' as one keyword", () => {
+    // 'solve' appears but no operators, no numerics. 1 signal at most → analyze.
+    const result = evaluateTriggerGate(
+      "Should I use Newton's method to solve this kind of optimization problem in production?",
+      LONG_RESPONSE
+    );
+    expect(result.skip).toBe(false);
+  });
+});
+
+describe("digitFraction", () => {
+  it("counts digit characters as a fraction of total", () => {
+    expect(digitFraction("abc123")).toBeCloseTo(3 / 6);
+    expect(digitFraction("no digits here")).toBe(0);
+    expect(digitFraction("")).toBe(0);
+  });
+});
+
+describe("isDeterministicTask", () => {
+  const NUMERIC_RESPONSE = "x = -2 or x = -3. The discriminant is 25 - 24 = 1. So x = (-5 ± 1) / 2.";
+  const PROSE_RESPONSE = "Word ".repeat(60).trim();
+
+  it("trips on classic math 'solve' prompt + numeric response", () => {
+    expect(isDeterministicTask("Solve x^2 + 5x + 6 = 0", NUMERIC_RESPONSE)).toBe(true);
+  });
+
+  it("trips on direct arithmetic question", () => {
+    expect(isDeterministicTask("What is 14% of 280?", "14% of 280 = 39.2")).toBe(true);
+  });
+
+  it("trips on conversion task", () => {
+    expect(isDeterministicTask("Convert 100 USD to EUR at today's rate", "100 USD ≈ 92 EUR")).toBe(true);
+  });
+
+  it("trips on integral / calculus task", () => {
+    expect(
+      isDeterministicTask("Integrate x^2 dx from 0 to 3", "= [x^3/3]_0^3 = 9")
+    ).toBe(true);
+  });
+
+  it("does NOT trip on a strategic question that contains 'solve'", () => {
+    expect(
+      isDeterministicTask(
+        "Should I use Newton's method to solve this kind of optimization problem?",
+        PROSE_RESPONSE
+      )
+    ).toBe(false);
+  });
+
+  it("does NOT trip on a vague 'calculate ROI' prompt without operators or numerics", () => {
+    expect(
+      isDeterministicTask("Calculate the marketing ROI for my campaign", PROSE_RESPONSE)
+    ).toBe(false);
+  });
+
+  it("does NOT trip on a strategy prompt with no math signals", () => {
+    expect(
+      isDeterministicTask(
+        "What is the best go-to-market strategy for an early-stage B2B SaaS startup?",
+        PROSE_RESPONSE
+      )
+    ).toBe(false);
+  });
+
+  it("does NOT trip on a single isolated number in a prose prompt", () => {
+    // "I'm 30 years old, should I switch careers?" — '30' is the only digit,
+    // no operators, no computational verb. Strategic question, must analyze.
+    expect(
+      isDeterministicTask(
+        "I'm 30 years old and want to know if I should switch careers to data science",
+        PROSE_RESPONSE
+      )
+    ).toBe(false);
   });
 });
