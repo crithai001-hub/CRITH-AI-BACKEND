@@ -23,6 +23,12 @@ const COMPUTATIONAL_VERB_RE =
 const COMPUTATIONAL_PHRASE_RE =
   /\b(?:square root|cube root|find the (?:value|root|derivative|integral|area|volume|product|sum|difference|quotient)|how many [^?]*?(?:are|is) (?:in|equal))/i;
 
+// Patterns used to decide if the RESPONSE is dominated by math/calculation
+// content. Any of these alone is treated as a strong signal.
+const EQUATION_PATTERN_RE = /\b[a-zA-Z0-9_()]+\s*=\s*[^=\s]/g;
+const MATH_UNICODE_RE = /[√∑∫≈≤≥×÷±∞]/g;
+const OP_DIGIT_PATTERN_RE = /\d+\s*[+\-*/=^×÷]\s*\d+/g;
+
 export function countWords(text: string): number {
   const trimmed = text.trim();
   if (!trimmed) return 0;
@@ -62,15 +68,37 @@ export function digitFraction(s: string): number {
   return count / s.length;
 }
 
+// Counts patterns in the response that indicate it is dominated by math.
+// Any one of the three sub-detectors hitting its threshold makes the response
+// "math-heavy" and is a strong stand-alone signal in isDeterministicTask.
+export function isResponseMathHeavy(response: string): boolean {
+  if (response.length === 0) return false;
+  const equationCount = (response.match(EQUATION_PATTERN_RE) ?? []).length;
+  if (equationCount >= 3) return true;
+  const mathSymbolCount = (response.match(MATH_UNICODE_RE) ?? []).length;
+  if (mathSymbolCount >= 5) return true;
+  const opDigitCount = (response.match(OP_DIGIT_PATTERN_RE) ?? []).length;
+  if (opDigitCount >= 5) return true;
+  return false;
+}
+
 // Detects prompts where the user wants ONE correct answer that the AI can
 // either compute or look up — math, conversions, "solve this," etc.
 // Provocations are pointless on these: there's no reasoning to question,
 // just a computation to verify.
 //
-// At-least-2 signals required to skip. This guards against false positives
-// like "Should I use Newton's method to solve this?" (strategic question
-// containing 'solve' but with no operators or numerics in the prompt).
+// Two paths:
+//   (a) Strong signal: response is itself math-heavy (3+ equations, 5+ math
+//       symbols, or 5+ digit-op-digit patterns). One signal is enough — if
+//       the AI's response is dominated by calculation, the prompt context
+//       doesn't matter, there's no reasoning to question.
+//   (b) Weak signals (at-least-2): math operators in prompt, computational
+//       verb at start, digit-heavy prompt, digit-heavy response. Guards
+//       against false positives like "Should I use Newton's method to solve
+//       this?" (strategy question containing 'solve' but no operators).
 export function isDeterministicTask(prompt: string, response: string): boolean {
+  if (isResponseMathHeavy(response)) return true;
+
   let signals = 0;
   if (MATH_OPERATORS_IN_CONTEXT_RE.test(prompt)) signals++;
   if (COMPUTATIONAL_VERB_RE.test(prompt) || COMPUTATIONAL_PHRASE_RE.test(prompt)) signals++;

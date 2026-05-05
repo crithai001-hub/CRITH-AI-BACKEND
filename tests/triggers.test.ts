@@ -5,7 +5,8 @@ import {
   digitFraction,
   evaluateTriggerGate,
   isDeterministicTask,
-  isFactualLookup
+  isFactualLookup,
+  isResponseMathHeavy
 } from "../lib/triggers.js";
 
 describe("countWords", () => {
@@ -213,5 +214,48 @@ describe("isDeterministicTask", () => {
         PROSE_RESPONSE
       )
     ).toBe(false);
+  });
+
+  it("trips on a math-heavy response regardless of prompt shape", () => {
+    // Even a vague prompt should skip if the AI's response is dominated by
+    // equations / arithmetic — there's no reasoning to question.
+    const mathResponse =
+      "Step 1: x = -2 or x = -3.\nStep 2: y = 5 + 7 = 12.\nStep 3: z = (12 - 4) / 2 = 4.\nFinal answer: x = 4.";
+    expect(isDeterministicTask("how do I do this", mathResponse)).toBe(true);
+  });
+});
+
+describe("isResponseMathHeavy", () => {
+  it("trips on 3+ equation patterns in the response", () => {
+    const response =
+      "x = -2 and x = -3. The check: 25 - 24 = 1. Therefore y = (-5 + 1) / 2.";
+    expect(isResponseMathHeavy(response)).toBe(true);
+  });
+
+  it("trips on 5+ math unicode symbols", () => {
+    const response = "Compute ∑ over the set, then ∫ from a to b. Bounds: ≤ ≥ ± ≈.";
+    expect(isResponseMathHeavy(response)).toBe(true);
+  });
+
+  it("trips on 5+ digit-op-digit patterns", () => {
+    const response =
+      "First 2 + 3 = 5, next 8 - 1 = 7, then 7 * 2 = 14, then 14 / 2 = 7, then 7 + 0 = 7.";
+    expect(isResponseMathHeavy(response)).toBe(true);
+  });
+
+  it("does NOT trip on prose responses with a few percentages", () => {
+    const response =
+      "Q1 grew 23%, Q2 grew 35%, Q3 grew 41%. The trend is encouraging but it's worth examining whether the underlying drivers are sustainable into Q4.";
+    expect(isResponseMathHeavy(response)).toBe(false);
+  });
+
+  it("does NOT trip on a normal prose response with one definition equation", () => {
+    const response =
+      "GDP per capita = nation's GDP / population. This metric is widely used but has known limitations when comparing across very different economies.";
+    expect(isResponseMathHeavy(response)).toBe(false);
+  });
+
+  it("returns false on empty input", () => {
+    expect(isResponseMathHeavy("")).toBe(false);
   });
 });
