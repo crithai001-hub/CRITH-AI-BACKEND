@@ -138,12 +138,20 @@ export type ClaimType =
 
 export type Risk = "high" | "medium" | "low";
 
+// Claude's read on whether the claim looks like a fabrication or stale fact.
+// Independent from `risk` (which is about consequences if false). The frontend
+// underlines "high" and "medium" claims so the user is warned before clicking
+// through to verification; "none" claims ship for on-demand verify only.
+export type HallucinationSignal = "high" | "medium" | "none";
+
 export interface VerifiableClaim {
   claim: string;
   anchored_to: string;
   claim_type: ClaimType;
   why_verify: string;
   risk: Risk;
+  hallucination_signal: HallucinationSignal;
+  hallucination_reason: string;
 }
 
 export interface ClaimExtractorResult {

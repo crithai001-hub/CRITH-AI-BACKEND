@@ -38,6 +38,8 @@ const VALID_CLAIM_TYPES = new Set([
   "technical_fact"
 ]);
 const VALID_RISKS = new Set(["high", "medium", "low"]);
+const VALID_HALLUCINATION_SIGNALS = new Set(["high", "medium", "none"]);
+const HALLUCINATION_REASON_MAX_CHARS = 80;
 
 function truncate(s: string): string {
   return s.length <= MAX_RESPONSE_CHARS ? s : s.slice(0, MAX_RESPONSE_CHARS) + TRUNCATION_MARKER;
@@ -106,14 +108,20 @@ export function parseClaimExtractorResponse(
       typeof c.anchored_to !== "string" ||
       typeof c.claim_type !== "string" ||
       typeof c.why_verify !== "string" ||
-      typeof c.risk !== "string"
+      typeof c.risk !== "string" ||
+      typeof c.hallucination_signal !== "string" ||
+      typeof c.hallucination_reason !== "string"
     ) {
       continue;
     }
     if (!VALID_CLAIM_TYPES.has(c.claim_type)) continue;
     if (!VALID_RISKS.has(c.risk)) continue;
+    if (!VALID_HALLUCINATION_SIGNALS.has(c.hallucination_signal)) continue;
     if (c.claim.length === 0 || c.claim.length > 400) continue;
     if (c.why_verify.length === 0 || c.why_verify.length > 200) continue;
+    if (c.hallucination_reason.length === 0 || c.hallucination_reason.length > HALLUCINATION_REASON_MAX_CHARS) {
+      continue;
+    }
 
     // Anchor recovery: same discipline as the validator. Keep if verbatim;
     // otherwise recover the closest verbatim slice; only drop if no usable
@@ -139,7 +147,9 @@ export function parseClaimExtractorResponse(
       anchored_to: recovered,
       claim_type: c.claim_type as VerifiableClaim["claim_type"],
       why_verify: c.why_verify,
-      risk: c.risk as VerifiableClaim["risk"]
+      risk: c.risk as VerifiableClaim["risk"],
+      hallucination_signal: c.hallucination_signal as VerifiableClaim["hallucination_signal"],
+      hallucination_reason: c.hallucination_reason
     });
   }
 

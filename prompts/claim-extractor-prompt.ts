@@ -1,4 +1,4 @@
-export const CLAIM_EXTRACTOR_VERSION = "v1";
+export const CLAIM_EXTRACTOR_VERSION = "v2";
 
 export const CLAIM_EXTRACTOR_PROMPT = `You identify verifiable factual claims in an AI assistant's response that the user might want to fact-check before relying on them.
 
@@ -30,9 +30,9 @@ Types of verifiable claims to flag:
 
 # Why this matters
 
-AI training data has a knowledge cutoff. AI also fabricates citations, statistics, and quotes that sound plausible. The user reading the response can't tell which specific facts to verify. Your job is to surface them.
+AI training data has a knowledge cutoff. AI also fabricates citations, statistics, and quotes that sound plausible. The user reading the response can't tell which specific facts to verify. Your job is to surface them and — separately — to call out which of those claims look like they might actually be wrong, so the UI can highlight the suspicious ones immediately.
 
-You are NOT verifying the claims. You are flagging them as worth verifying. The user (or a separate verification endpoint) does the actual lookup.
+You are NOT doing a web lookup. You are using your own pattern-recognition to (a) flag what's worth verifying and (b) flag where the response shows the tells of fabrication or AI staleness.
 
 # Output rules
 
@@ -45,6 +45,35 @@ Each claim MUST:
 - Have a \`claim_type\` from this enum: "statistic" | "citation" | "person_or_role" | "date" | "product_or_pricing" | "current_state" | "quote" | "technical_fact"
 - Have a \`why_verify\` field — one short sentence explaining why this specific claim is worth checking. Examples: "Specific market size with no source given." "AI knowledge has a cutoff; this person may have changed roles."
 - Have a \`risk\` field — "high" | "medium" | "low" — based on how badly the user would be misled if the claim turned out to be false.
+- Have a \`hallucination_signal\` field — "high" | "medium" | "none" — your read on whether the claim itself looks like an AI fabrication or stale fact (separate from \`risk\`, which is about consequences). See the section below.
+- Have a \`hallucination_reason\` field — one short phrase (under 80 chars) describing the tell. Required even when signal is "none" — in that case use a phrase like "specific verifiable fact, no fabrication tells."
+
+# Hallucination signal — how to assign
+
+\`hallucination_signal\` is YOUR read on the claim's plausibility, using the same instinct you'd use to spot fabrication in your own output. The frontend visually flags "high" and "medium" claims so the user is warned before clicking through to verification.
+
+**high** — strong tells of fabrication or knowledge-cutoff staleness. Use when:
+- A study, paper, or report is cited without a specific paper title, author, journal, or DOI ("according to a 2023 McKinsey study showing 73%...").
+- A direct quote is attributed to a person without a date, venue, or source.
+- A precise statistic is given with no source AND the number looks suspiciously round or precise (47%, 23%, 73% — common hallucinated patterns).
+- A leadership / role claim contradicts what's likely current ("X is the CEO of Y" when Y had a public leadership change you know of).
+- A product feature, pricing point, or API limit is stated as fact without a source AND uses round-number tells ("$99/month", "10,000 requests/min").
+- An "as of [recent date]" or "recently announced" claim — these are highly likely to be stale or made up.
+- The claim composes multiple specific factoids (number + name + date + outcome) where any one error invalidates the whole statement.
+
+**medium** — plausible but flag-worthy. Use when:
+- A specific stat or fact is plausible but uncited.
+- A claim about "the latest", "the leading", "the best" — these go stale fast even when written truthfully at the time.
+- A historical fact or date that is checkable but not obviously fabricated.
+- A technical specification (library version, config value) that may be correct now but tends to drift.
+- The pattern is "X is true" with confidence but no concrete source.
+
+**none** — verifiable but not suspect. Use when:
+- The fact is widely known and unlikely to be wrong (canonical, cross-checkable from common knowledge).
+- The claim quotes the user's own input back ("you mentioned X").
+- The claim is a definition or non-controversial scope statement.
+
+When in doubt between high and medium, pick medium. When in doubt between medium and none, pick medium. Conservatism is bad here — the signal exists to warn the user, and missing a hallucination is worse than over-flagging.
 
 # Skip rules
 
@@ -64,7 +93,9 @@ Return ONLY valid JSON, no preamble:
       "anchored_to": "string — verbatim 30-80 char substring of the AI's response",
       "claim_type": "statistic" | "citation" | "person_or_role" | "date" | "product_or_pricing" | "current_state" | "quote" | "technical_fact",
       "why_verify": "string — one sentence",
-      "risk": "high" | "medium" | "low"
+      "risk": "high" | "medium" | "low",
+      "hallucination_signal": "high" | "medium" | "none",
+      "hallucination_reason": "string — short phrase (<= 80 chars) describing the tell"
     }
   ]
 }
@@ -73,7 +104,7 @@ If skip is true, verifiable_claims must be an empty array.
 
 # Worked examples
 
-EXAMPLE 1
+EXAMPLE 1 — high hallucination_signal
 Response excerpt: "According to a 2023 McKinsey study, 73% of enterprise AI projects fail in the first year due to poor data infrastructure."
 
 Output:
@@ -82,10 +113,12 @@ Output:
   "anchored_to": "73% of enterprise AI projects fail in the first year",
   "claim_type": "statistic",
   "why_verify": "Specific statistic attributed to a named study; AIs frequently fabricate plausible-sounding research citations.",
-  "risk": "high"
+  "risk": "high",
+  "hallucination_signal": "high",
+  "hallucination_reason": "named report with no specific paper title or author; common AI fabrication pattern"
 }
 
-EXAMPLE 2
+EXAMPLE 2 — medium hallucination_signal
 Response excerpt: "Sam Altman is the CEO of OpenAI."
 
 Output:
@@ -94,15 +127,45 @@ Output:
   "anchored_to": "Sam Altman is the CEO of OpenAI",
   "claim_type": "person_or_role",
   "why_verify": "Leadership roles change; AI knowledge has a cutoff.",
-  "risk": "medium"
+  "risk": "medium",
+  "hallucination_signal": "medium",
+  "hallucination_reason": "leadership claim subject to change since training cutoff"
 }
 
-EXAMPLE 3 (do NOT flag)
+EXAMPLE 3 — high hallucination_signal (fabricated quote pattern)
+Response excerpt: "As Steve Jobs said: 'Real artists ship and ship often.'"
+
+Output:
+{
+  "claim": "Steve Jobs quote: 'Real artists ship and ship often.'",
+  "anchored_to": "As Steve Jobs said: 'Real artists ship and ship often.'",
+  "claim_type": "quote",
+  "why_verify": "Direct quote attributed to a real person; quotes are easy to fabricate.",
+  "risk": "medium",
+  "hallucination_signal": "high",
+  "hallucination_reason": "quote with no date or venue; the actual phrase is 'real artists ship'"
+}
+
+EXAMPLE 4 — none hallucination_signal
+Response excerpt: "Python is a high-level, interpreted programming language."
+
+This is a canonical definition with no fabrication tells. If the response is otherwise short, the prompt may skip; if the claim is included, the signal is "none":
+{
+  "claim": "Python is a high-level interpreted programming language",
+  "anchored_to": "Python is a high-level, interpreted programming language",
+  "claim_type": "technical_fact",
+  "why_verify": "Definitional fact, easy to verify but unlikely to be wrong.",
+  "risk": "low",
+  "hallucination_signal": "none",
+  "hallucination_reason": "canonical definition, no fabrication tells"
+}
+
+EXAMPLE 5 (do NOT flag at all)
 Response excerpt: "Most startups fail because they don't find product-market fit fast enough."
 
 Do not flag — vague generalization, not a specific verifiable claim.
 
-EXAMPLE 4 (do NOT flag)
+EXAMPLE 6 (do NOT flag at all)
 Response excerpt: "I'd recommend starting with Postgres for your use case."
 
 Do not flag — opinion/recommendation, belongs to the validator prompt if anything.`;
