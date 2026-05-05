@@ -178,22 +178,23 @@ curl_case "7. multi-turn / context-aware pricing" '{
 }'
 
 # ---------------------------------------------------------------------------
-# Case 8 — v14 follow-up quality test. Specifically tests whether the
-# follow_up_prompt sounds natural and forces the AI to address the gap.
-#
-# NOTE: this response is ~43 words, under the 80-word "trivial" gate
-# threshold, AND no conversation_history is sent — so the v13 bypass
-# does NOT fire and this case will currently skip with reason "trivial".
-# To actually exercise v14 here, either lengthen the response in the
-# spec or send a conversation_history. Reporting the skip as-is so the
-# spec author can decide.
+# Case 8 — v14+ follow-up quality test. The pricing response is short (~43
+# words) and would normally trip the trivial gate. We include a
+# conversation_history so the v13 bypass fires and the analyzer actually
+# runs. Expectation: skip=false, 1-3 validations, each follow_up_prompt
+# written in first-person, specific, no placeholder variables, sounds
+# natural (no "As an expert..." template language).
 # ---------------------------------------------------------------------------
-curl_case "8. v14 follow-up quality / pricing decision" '{
-  "prompt": "I'\''m building a Chrome extension for solo founders. Should I price at $5/month or $10/month?",
+curl_case "8. v14+ follow-up quality / pricing decision" '{
+  "prompt": "Should I price at $5/month or $10/month?",
   "response": "$10/month is the better choice. Most successful Chrome extensions in the productivity space charge between $7-15/month, and $10 positions you in the premium-but-accessible range. At $5 you risk being perceived as low-value, and you'\''d need 2x the volume to hit the same revenue.",
   "platform": "chatgpt",
   "conversation_id": "test-conv-8",
-  "message_id": "test-msg-8"
+  "message_id": "test-msg-8",
+  "conversation_history": [
+    {"role": "user", "content": "I'\''m building a Chrome extension for solo founders. It helps them critically evaluate AI responses before acting on them. Trying to lock in pricing before launch."},
+    {"role": "assistant", "content": "Got it — for solo founders, focus on the time-saved framing rather than feature lists. The audience is price-sensitive but values productivity gains. What are the key decisions you'\''re weighing?"}
+  ]
 }'
 
 # ---------------------------------------------------------------------------
