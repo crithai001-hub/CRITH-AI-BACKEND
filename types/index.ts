@@ -108,6 +108,19 @@ export type ExplainResponse =
   | { error: "internal" }
   | { error: "bad_request"; message: string };
 
+export interface SummarizeFlagsRequestBody {
+  analysis_id: string;
+}
+
+export type SummarizeFlagsResponse =
+  | { summary: string; cache_hit: boolean }
+  | { error: "unauthorized" }
+  | { error: "not_found" }
+  | { error: "not_applicable"; message: string }
+  | { error: "quota_exceeded"; limit: number; used: number }
+  | { error: "internal" }
+  | { error: "bad_request"; message: string };
+
 export type EventsResponse =
   | { ok: true }
   | { error: "unauthorized" }
