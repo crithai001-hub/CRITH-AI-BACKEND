@@ -57,6 +57,7 @@ interface InsertRowInput {
   skipped: boolean;
   skip_reason: SkipReason | null;
   validations: Validation[];
+  suppressed_validations: Validation[];
   verifiable_claims: VerifiableClaim[];
   tokens_in: number;
   tokens_out: number;
@@ -90,6 +91,9 @@ async function insertAnalysisRow(input: InsertRowInput): Promise<string | null> 
       // v14+ schema. Old `provocations` column stays nullable for legacy rows;
       // we no longer write to it. New writes go to `validations` only.
       validations: input.validations,
+      // v24+ schema. Broader findings that didn't pass the severity gate but
+      // passed every other quality gate. Rendered in the report panel only.
+      suppressed_validations: input.suppressed_validations,
       verifiable_claims: input.verifiable_claims,
       claim_extractor_version: input.claim_extractor_version,
       claim_extractor_tokens_in: input.claim_extractor_tokens_in,
@@ -149,6 +153,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         skipped: true,
         skip_reason: gate.reason,
         validations: [],
+        suppressed_validations: [],
         verifiable_claims: [],
         tokens_in: 0,
         tokens_out: 0,
@@ -178,6 +183,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         skipped: true,
         skip_reason: "quota_exceeded",
         validations: [],
+        suppressed_validations: [],
         verifiable_claims: [],
         tokens_in: 0,
         tokens_out: 0,
@@ -234,6 +240,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         skipped: true,
         skip_reason: validatorSettled.status === "rejected" ? "claude_error" : "parse_error",
         validations: [],
+        suppressed_validations: [],
         verifiable_claims: [],
         tokens_in: validatorUsage?.tokens_in ?? 0,
         tokens_out: validatorUsage?.tokens_out ?? 0,
@@ -261,34 +268,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
     const rawValidations: Validation[] =
       validatorResult && !validatorResult.result.skip ? validatorResult.result.validations : [];
+    const rawSuppressed: Validation[] =
+      validatorResult && !validatorResult.result.skip ? validatorResult.result.suppressed : [];
     const verifiable_claims: VerifiableClaim[] =
       extractorResult && !extractorResult.result.skip
         ? extractorResult.result.verifiable_claims
         : [];
 
-    // Dedup: drop any validation whose anchor span overlaps with a claim's
-    // anchor span. The claim wins — factual wrongness is more specific than
-    // a reasoning gap on the same content. Belt-and-suspenders for v19's
-    // prompt-level rule that forbids the validator from anchoring on facts.
-    const validations: Validation[] = rawValidations.filter((v) => {
-      const overlap = verifiable_claims.find((c) =>
-        anchorsOverlap(body.response, v.anchored_to, c.anchored_to)
-      );
-      if (overlap) {
-        console.info("[analyze-response] dropping validation: overlaps claim anchor", {
-          lens: v.lens,
-          validation_anchor_preview: v.anchored_to.slice(0, 80),
-          claim_anchor_preview: overlap.anchored_to.slice(0, 80)
-        });
-        return false;
-      }
-      return true;
-    });
+    // Dedup: drop any validation/suppressed item whose anchor span overlaps a
+    // claim's anchor span. The claim wins — factual wrongness is more specific
+    // than a reasoning gap on the same content. Apply identically to both
+    // tiers so the report panel doesn't surface broader flags that step on
+    // hallucination underlines.
+    const dedupAgainstClaims = (items: Validation[], tier: string): Validation[] =>
+      items.filter((v) => {
+        const overlap = verifiable_claims.find((c) =>
+          anchorsOverlap(body.response, v.anchored_to, c.anchored_to)
+        );
+        if (overlap) {
+          console.info(`[analyze-response] dropping ${tier} item: overlaps claim anchor`, {
+            lens: v.lens,
+            item_anchor_preview: v.anchored_to.slice(0, 80),
+            claim_anchor_preview: overlap.anchored_to.slice(0, 80)
+          });
+          return false;
+        }
+        return true;
+      });
+    const validations: Validation[] = dedupAgainstClaims(rawValidations, "validation");
+    const suppressed_validations: Validation[] = dedupAgainstClaims(rawSuppressed, "suppressed");
 
     const validatorSkipped = validatorResult ? validatorResult.result.skip : true;
     // Top-level skip only when validator skipped AND no claims to surface.
     // Extension treats skip:true as "no card"; if claims are present we want it rendered.
-    const skipped = validatorSkipped && verifiable_claims.length === 0;
+    // Suppressed items alone do not unskip — they're report-panel content; if
+    // the inline UI has nothing AND there are no claims, treat as skipped so
+    // the extension doesn't render an empty card just to host a hidden panel.
+    const skipped =
+      validatorSkipped && verifiable_claims.length === 0 && suppressed_validations.length === 0;
 
     const validatorUsage = validatorResult?.usage;
     const extractorUsage = extractorResult?.usage;
@@ -299,6 +316,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       skipped,
       skip_reason: skipped ? "trivial" : null,
       validations,
+      suppressed_validations,
       verifiable_claims,
       tokens_in: validatorUsage?.tokens_in ?? 0,
       tokens_out: validatorUsage?.tokens_out ?? 0,
@@ -329,6 +347,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     res.status(200).json({
       skip: false,
       validations,
+      suppressed: suppressed_validations,
       verifiable_claims,
       analysis_id: analysisId,
       prompt_versions

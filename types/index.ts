@@ -84,6 +84,9 @@ export interface Validation {
 export interface ClaudeAnalysisResult {
   skip: boolean;
   validations: Validation[];
+  // v24+: broader findings that passed the validator's quality gates but not
+  // the severity/direct-relevance bar. Rendered in the report panel only.
+  suppressed: Validation[];
 }
 
 export type AnalyzeResponse =
@@ -91,6 +94,10 @@ export type AnalyzeResponse =
   | {
       skip: false;
       validations: Validation[];
+      // v24+: optional for backwards compatibility with old extensions reading
+      // this payload. New extension code should expect this array and render
+      // the report panel from it. Empty array == nothing to expand.
+      suppressed: Validation[];
       verifiable_claims: VerifiableClaim[];
       analysis_id: string;
       prompt_versions: PromptVersions;

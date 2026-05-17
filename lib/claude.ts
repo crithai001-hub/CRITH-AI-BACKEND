@@ -84,6 +84,75 @@ function extractFirstJsonBlock(text: string): string | null {
   return null;
 }
 
+// Hard cap on suppressed list. Mirrors the prompt's "max 4" guidance and
+// prevents a runaway model from filling the report panel with noise.
+const SUPPRESSED_MAX = 4;
+
+// Per-item validator shared by both `validations` and `suppressed`. Returns
+// null for whole-batch failures (missing required field, invalid enum) and a
+// Validation when the row should be kept. Soft drops are logged with a
+// bucket label so we can tell from logs which list a drop came from.
+function validateSingle(
+  raw: unknown,
+  aiResponse: string,
+  bucket: "validations" | "suppressed"
+): Validation | null {
+  if (!raw || typeof raw !== "object") return null;
+  const v = raw as Record<string, unknown>;
+  if (
+    typeof v.problem !== "string" ||
+    typeof v.follow_up_prompt !== "string" ||
+    typeof v.lens !== "string" ||
+    typeof v.anchored_to !== "string" ||
+    typeof v.severity !== "string"
+  ) {
+    return null;
+  }
+  if (!VALID_LENSES.has(v.lens) || !VALID_SEVERITIES.has(v.severity)) return null;
+
+  if (v.problem.length === 0 || v.problem.length > PROBLEM_MAX_CHARS) {
+    console.warn(`[claude] dropping ${bucket} item: problem length out of range`, {
+      length: v.problem.length,
+      cap: PROBLEM_MAX_CHARS,
+      lens: v.lens
+    });
+    return null;
+  }
+
+  if (v.follow_up_prompt.length === 0 || v.follow_up_prompt.length > FOLLOW_UP_MAX_CHARS) {
+    console.warn(`[claude] dropping ${bucket} item: follow_up_prompt length out of range`, {
+      length: v.follow_up_prompt.length,
+      cap: FOLLOW_UP_MAX_CHARS,
+      lens: v.lens
+    });
+    return null;
+  }
+
+  const recovered = recoverAnchor(v.anchored_to, aiResponse);
+  if (recovered === null) {
+    console.warn(`[claude] dropping ${bucket} item: anchor not recoverable`, {
+      lens: v.lens,
+      anchored_to_preview: v.anchored_to.slice(0, 120)
+    });
+    return null;
+  }
+  if (recovered !== v.anchored_to) {
+    console.info(`[claude] ${bucket} anchor recovered`, {
+      lens: v.lens,
+      original_preview: v.anchored_to.slice(0, 120),
+      recovered_preview: recovered.slice(0, 120)
+    });
+  }
+
+  return {
+    problem: v.problem,
+    follow_up_prompt: v.follow_up_prompt,
+    lens: v.lens as Validation["lens"],
+    anchored_to: recovered,
+    severity: v.severity as Validation["severity"]
+  };
+}
+
 function validateAnalysis(
   parsed: unknown,
   aiResponse: string
@@ -93,80 +162,52 @@ function validateAnalysis(
   if (typeof obj.skip !== "boolean") return null;
   if (!Array.isArray(obj.validations)) return null;
 
-  if (obj.skip && obj.validations.length > 0) {
-    return { skip: true, validations: [] };
+  // suppressed is OPTIONAL — older prompt outputs and degenerate model outputs
+  // may omit it. Treat absence as empty.
+  const rawSuppressed = Array.isArray(obj.suppressed) ? obj.suppressed : [];
+
+  // Skip-true with content is a model contract violation; keep skip semantic
+  // and discard everything else rather than reject the whole batch.
+  if (obj.skip) {
+    return { skip: true, validations: [], suppressed: [] };
   }
 
   const validations: Validation[] = [];
   for (const raw of obj.validations) {
-    if (!raw || typeof raw !== "object") return null;
-    const v = raw as Record<string, unknown>;
-    if (
-      typeof v.problem !== "string" ||
-      typeof v.follow_up_prompt !== "string" ||
-      typeof v.lens !== "string" ||
-      typeof v.anchored_to !== "string" ||
-      typeof v.severity !== "string"
-    ) {
-      return null;
-    }
-    if (!VALID_LENSES.has(v.lens) || !VALID_SEVERITIES.has(v.severity)) return null;
-
-    // Soft drops below: instead of failing the whole batch, drop the single
-    // offending validation and keep the rest. Logged for prompt-quality
-    // monitoring — a high drop rate means the model is breaking the contract.
-
-    if (v.problem.length === 0 || v.problem.length > PROBLEM_MAX_CHARS) {
-      console.warn("[claude] dropping validation: problem length out of range", {
-        length: v.problem.length,
-        cap: PROBLEM_MAX_CHARS,
-        lens: v.lens
-      });
+    const v = validateSingle(raw, aiResponse, "validations");
+    if (v === null) {
+      // Distinguish hard-fail (bad shape / enum) from soft-drop (length / anchor).
+      // validateSingle returns null in BOTH cases; on a shape/enum failure we
+      // want to fail the whole batch (the model isn't following the contract);
+      // on a soft drop we just skip the item. We can't tell them apart from
+      // here without re-inspecting, so be conservative and fail only when the
+      // raw item is non-object-shaped or missing required string fields.
+      if (!raw || typeof raw !== "object") return null;
+      const rv = raw as Record<string, unknown>;
+      if (
+        typeof rv.problem !== "string" ||
+        typeof rv.follow_up_prompt !== "string" ||
+        typeof rv.lens !== "string" ||
+        typeof rv.anchored_to !== "string" ||
+        typeof rv.severity !== "string" ||
+        !VALID_LENSES.has(rv.lens as string) ||
+        !VALID_SEVERITIES.has(rv.severity as string)
+      ) {
+        return null;
+      }
       continue;
     }
-
-    if (v.follow_up_prompt.length === 0 || v.follow_up_prompt.length > FOLLOW_UP_MAX_CHARS) {
-      console.warn("[claude] dropping validation: follow_up_prompt length out of range", {
-        length: v.follow_up_prompt.length,
-        cap: FOLLOW_UP_MAX_CHARS,
-        lens: v.lens
-      });
-      continue;
-    }
-
-    // Anchor MUST be a verbatim substring of the response. The extension renders
-    // each underline by calling response.includes(anchored_to); if that returns
-    // false the validation silently has no UI anchor.
-    //
-    // If the model paraphrased (concatenated list items, swapped en-dash for
-    // hyphen, etc.), try to recover the closest verbatim slice. Recovery only
-    // returns null when no usable substring exists; in that case we drop.
-    const recovered = recoverAnchor(v.anchored_to, aiResponse);
-    if (recovered === null) {
-      console.warn("[claude] dropping validation: anchor not recoverable", {
-        lens: v.lens,
-        anchored_to_preview: v.anchored_to.slice(0, 120)
-      });
-      continue;
-    }
-    if (recovered !== v.anchored_to) {
-      console.info("[claude] anchor recovered", {
-        lens: v.lens,
-        original_preview: v.anchored_to.slice(0, 120),
-        recovered_preview: recovered.slice(0, 120)
-      });
-    }
-
-    validations.push({
-      problem: v.problem,
-      follow_up_prompt: v.follow_up_prompt,
-      lens: v.lens as Validation["lens"],
-      anchored_to: recovered,
-      severity: v.severity as Validation["severity"]
-    });
+    validations.push(v);
   }
 
-  return { skip: obj.skip, validations };
+  const suppressed: Validation[] = [];
+  for (const raw of rawSuppressed.slice(0, SUPPRESSED_MAX)) {
+    const v = validateSingle(raw, aiResponse, "suppressed");
+    if (v !== null) suppressed.push(v);
+    // suppressed never fails the whole batch — it's optional report-panel content.
+  }
+
+  return { skip: obj.skip, validations, suppressed };
 }
 
 interface ClaudeCallSuccess {
