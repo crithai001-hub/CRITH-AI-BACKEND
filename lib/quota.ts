@@ -1,3 +1,4 @@
+import { isProUser } from "./plan.js";
 import { supabaseService } from "./supabase.js";
 
 // Returns the current month key in YYYY-MM format (UTC).
@@ -10,7 +11,7 @@ export function monthKey(date: Date = new Date()): string {
 export function getMonthlyLimit(): number {
   const raw = process.env.FREE_RESPONSE_ANALYSES_MONTHLY_LIMIT;
   const parsed = raw ? parseInt(raw, 10) : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10;
 }
 
 export interface QuotaIncrementResult {
@@ -55,5 +56,8 @@ export async function incrementResponseAnalysesQuota(userId: string): Promise<Qu
     throw new Error(`quota upsert failed: ${error.message}`);
   }
 
-  return { used: nextCount, limit, exceeded: nextCount > limit };
+  // Pro users never exceed — the counter still increments for analytics, but
+  // /api/analyze-response and /api/verify-claim won't 429 them.
+  const isPro = await isProUser(userId);
+  return { used: nextCount, limit, exceeded: !isPro && nextCount > limit };
 }
