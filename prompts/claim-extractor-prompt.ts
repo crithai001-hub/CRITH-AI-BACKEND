@@ -20,6 +20,8 @@ Types of verifiable claims to flag:
 8. SPECIFIC TECHNICAL FACTS — API limits, library versions, configuration values, algorithmic complexities stated as fact.
 9. AI MISTAKES — Obvious errors the AI made that aren't fact-claims, but the user still wants flagged because the AI got it wrong. Examples: a random word in the wrong language slipped in mid-response (a French or Spanish word in an English answer), the same sentence repeated two or three times in a row, broken markdown that mangles the output, garbled or corrupted-looking text, the response cutting off mid-sentence. These can't be checked with a web search — they're self-evident errors anyone reading the response would spot. Flag them under \`claim_type: "ai_mistake"\` with the same urgency as a fabricated fact.
 
+10. ACTIONABLE RECOMMENDATIONS — A specific tool, workflow, method, command, library, process, or step-by-step instruction that the user would need to go and execute or implement themselves. Examples: recommending a specific software tool, a terminal command, a framework to follow, a configuration approach, an API integration method, a multi-step process. Does NOT include vague general advice like "you should plan carefully" — that stays excluded under the rules below.
+
 # What NOT to flag
 
 - Reasoning, recommendations, opinions, or subjective judgments
@@ -28,6 +30,8 @@ Types of verifiable claims to flag:
 - Hidden assumptions, missing perspectives, or other gaps — those belong to the validator prompt
 - Common knowledge a reasonable user would not need to verify
 - Claims the user supplied themselves in the prompt — those aren't AI claims
+
+Except actionable recommendations — specific tools, workflows, commands, libraries, or step-by-step processes the user would need to go execute. These must be flagged under \`claim_type: "actionable_recommendation"\`.
 
 # Why this matters
 
@@ -43,7 +47,7 @@ Each claim MUST:
 
 - Have a \`claim\` field that restates the fact in a clean, searchable form. Not a copy of the response — a sentence the user could paste into a search engine.
 - Have an \`anchored_to\` field that is a VERBATIM 30-80 char substring of the AI's response. Same discipline as the validator. Must satisfy \`response.includes(anchored_to)\` exactly.
-- Have a \`claim_type\` from this enum: "statistic" | "citation" | "person_or_role" | "date" | "product_or_pricing" | "current_state" | "quote" | "technical_fact" | "ai_mistake"
+- Have a \`claim_type\` from this enum: "statistic" | "citation" | "person_or_role" | "date" | "product_or_pricing" | "current_state" | "quote" | "technical_fact" | "ai_mistake" | "actionable_recommendation"
 - Have a \`why_verify\` field — one short sentence explaining why this specific claim is worth checking. Examples: "Specific market size with no source given." "AI knowledge has a cutoff; this person may have changed roles."
 - Have a \`risk\` field — "high" | "medium" | "low" — based on how badly the user would be misled if the claim turned out to be false.
 - Have a \`hallucination_signal\` field — "high" | "medium" | "none" — your read on whether the claim itself looks like an AI fabrication or stale fact (separate from \`risk\`, which is about consequences). See the section below.
@@ -80,6 +84,14 @@ When in doubt between high and medium, pick medium. When in doubt between medium
 
 When you flag an \`ai_mistake\`, \`hallucination_signal\` MUST be "high". These are self-evident errors — there is no "medium" level of repetition, no "low" level of mid-sentence truncation. Either it's a mistake or it isn't. \`hallucination_reason\` should describe the mistake in a short phrase: "random French word in English response", "same sentence repeated three times", "broken markdown — code fence not closed", "garbled / corrupted text", "response truncated mid-sentence". Set \`why_verify\` to a short, plain reason like "Self-evident AI error" — the frontend skips the verify pipeline for these because there's nothing to look up. Set \`risk\` to "medium" — the user is meaningfully misled when the AI's output is broken, but it's not a category that maps cleanly to high/low risk.
 
+# Actionable recommendations always get hallucination_signal: "high"
+
+When you flag an \`actionable_recommendation\`, \`hallucination_signal\` MUST be "high" regardless of how plausible the suggestion looks. The goal here is not to catch fabrication — it is to verify the recommendation is viable and has real-world backing. A named tool may not actually support the use case the AI implied; a command may run but produce different output than described; a workflow may have known issues, deprecations, or better current alternatives; a library may be unmaintained or no longer the recommended choice.
+
+For \`actionable_recommendation\` claims, \`why_verify\` should explain what specifically needs confirming about the recommendation — examples: "Does this tool actually support this use case?", "Does this command produce the described output?", "Are there known issues with this approach or better alternatives?", "Is this library still maintained and the recommended choice today?"
+
+Set \`hallucination_reason\` to a short phrase naming what is being recommended and why it needs a viability check, e.g. "specific tool recommendation — viability check needed", "named command — verify output and side effects", "framework / workflow suggestion — confirm fit and known issues".
+
 # Skip rules
 
 If the response contains no specific verifiable claims (pure reasoning, advice, opinion, code), return \`skip: true\` with empty array.
@@ -96,7 +108,7 @@ Return ONLY valid JSON, no preamble:
     {
       "claim": "string — clean, searchable form of the claim",
       "anchored_to": "string — verbatim 30-80 char substring of the AI's response",
-      "claim_type": "statistic" | "citation" | "person_or_role" | "date" | "product_or_pricing" | "current_state" | "quote" | "technical_fact" | "ai_mistake",
+      "claim_type": "statistic" | "citation" | "person_or_role" | "date" | "product_or_pricing" | "current_state" | "quote" | "technical_fact" | "ai_mistake" | "actionable_recommendation",
       "why_verify": "string — one sentence",
       "risk": "high" | "medium" | "low",
       "hallucination_signal": "high" | "medium" | "none",
@@ -198,10 +210,19 @@ Response excerpt: "Most startups fail because they don't find product-market fit
 
 Do not flag — vague generalization, not a specific verifiable claim.
 
-EXAMPLE 8 (do NOT flag at all)
+EXAMPLE 8 — actionable_recommendation
 Response excerpt: "I'd recommend starting with Postgres for your use case."
 
-Do not flag — opinion/recommendation, belongs to the validator prompt if anything.`;
+Output:
+{
+  "claim": "Postgres is the recommended database starting choice for the user's use case",
+  "anchored_to": "I'd recommend starting with Postgres for your use case.",
+  "claim_type": "actionable_recommendation",
+  "why_verify": "Does Postgres actually fit the user's described use case, and are there better-suited alternatives worth considering?",
+  "risk": "medium",
+  "hallucination_signal": "high",
+  "hallucination_reason": "specific tool recommendation — viability check needed"
+}`;
 
 export function buildClaimExtractorUserMessage(userPrompt: string, aiResponse: string): string {
   return `USER'S PROMPT:

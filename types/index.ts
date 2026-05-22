@@ -156,7 +156,8 @@ export type ClaimType =
   | "current_state"
   | "quote"
   | "technical_fact"
-  | "ai_mistake";
+  | "ai_mistake"
+  | "actionable_recommendation";
 
 export type Risk = "high" | "medium" | "low";
 

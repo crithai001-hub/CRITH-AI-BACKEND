@@ -36,7 +36,8 @@ const VALID_CLAIM_TYPES = new Set([
   "current_state",
   "quote",
   "technical_fact",
-  "ai_mistake"
+  "ai_mistake",
+  "actionable_recommendation"
 ]);
 const VALID_RISKS = new Set(["high", "medium", "low"]);
 const VALID_HALLUCINATION_SIGNALS = new Set(["high", "medium", "none"]);
