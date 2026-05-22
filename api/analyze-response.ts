@@ -307,6 +307,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const skipped =
       validatorSkipped && verifiable_claims.length === 0 && suppressed_validations.length === 0;
 
+    // When validatorResult is null we're skipping because the validator failed
+    // silently (SDK throw or parse_error), not because there was nothing to flag.
+    // Surface the underlying failure so the extension can distinguish "no flags"
+    // from "couldn't analyze". Don't override when validator legit said skip:true.
+    const validatorFailureReason: SkipReason | null = validatorOk
+      ? null
+      : validatorSettled.status === "rejected"
+        ? "claude_error"
+        : "parse_error";
+    const skipReason: SkipReason | null = skipped
+      ? (validatorFailureReason ?? "trivial")
+      : null;
+
     const validatorUsage = validatorResult?.usage;
     const extractorUsage = extractorResult?.usage;
 
@@ -314,7 +327,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       user_id: user.user_id,
       body,
       skipped,
-      skip_reason: skipped ? "trivial" : null,
+      skip_reason: skipReason,
       validations,
       suppressed_validations,
       verifiable_claims,
@@ -340,7 +353,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     };
 
     if (skipped) {
-      res.status(200).json({ skip: true, reason: "trivial", analysis_id: analysisId });
+      res.status(200).json({ skip: true, reason: skipReason!, analysis_id: analysisId });
       return;
     }
 
