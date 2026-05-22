@@ -1,16 +1,25 @@
-// Single source of truth for "is this user on the pro tier?".
-// Used by /api/user-plan (to report is_pro + flags_limit=null) and by
-// incrementResponseAnalysesQuota (to never exceed for pro users).
+import { supabaseService } from "./supabase.js";
+
+// Single source of truth for "is this user on the pro tier?". Reads from
+// public.profiles.is_pro, which is written by the Stripe webhook
+// (api/stripe-webhook.ts) on checkout.session.completed /
+// customer.subscription.deleted. Used by /api/user-plan and by
+// incrementResponseAnalysesQuota (pro users never see exceeded:true).
 //
-// No billing system exists yet — every user is free. When pro tier ships,
-// flip this function to read from whatever source becomes authoritative:
-//   - auth.users.raw_app_meta_data->>'plan' = 'pro' (managed via Supabase)
-//   - a dedicated public.user_plans table joined on user_id
-//   - an external billing webhook (Stripe, Lemon Squeezy, etc.) writing the
-//     above on subscription events
-//
-// The userId param is unused for now but kept so callers don't have to change
-// when the real check lands.
-export async function isProUser(_userId: string): Promise<boolean> {
-  return false;
+// Fails closed: any error or missing row → treat as free. Conservative
+// because the profile row is auto-created on signup via the
+// on_auth_user_created trigger, so a missing row indicates either a brand-new
+// account before the trigger ran or a real anomaly — neither should
+// accidentally grant pro.
+export async function isProUser(userId: string): Promise<boolean> {
+  const { data, error } = await supabaseService
+    .from("profiles")
+    .select("is_pro")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) {
+    console.error("[plan] isProUser lookup failed", error);
+    return false;
+  }
+  return data?.is_pro === true;
 }
