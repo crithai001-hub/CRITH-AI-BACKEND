@@ -127,6 +127,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
     res.status(200).json({
       verdict: result.verdict,
+      // v25+ alias — new extension reads `evidence`, old extension reads
+      // `evidence_summary`. Both populated with the same value.
+      evidence: result.evidence_summary,
       evidence_summary: result.evidence_summary,
       source_urls: result.source_urls,
       verification_id: insertRow.id as string
