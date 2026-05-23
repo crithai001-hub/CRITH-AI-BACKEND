@@ -5,6 +5,7 @@ import { incrementResponseAnalysesQuota } from "../lib/quota.js";
 import { explainProvocation } from "../lib/explainer.js";
 import { supabaseService } from "../lib/supabase.js";
 import { EXPLAINER_PROMPT_VERSION } from "../prompts/explainer-system-prompt.js";
+import { resolveFlagItems } from "../lib/flag-resolution.js";
 import type { ExplainRequestBody, Lens, Provocation, Validation } from "../types/index.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -70,8 +71,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const validations = (analysis.validations ?? []) as Validation[];
     const suppressed = (analysis.suppressed_validations ?? []) as Validation[];
     const provocations = (analysis.provocations ?? []) as Provocation[];
-    const items: Array<Validation | Provocation> =
-      validations.length > 0 ? [...validations, ...suppressed] : provocations;
+    const items = resolveFlagItems(validations, suppressed, provocations);
     const provocation = items[body.provocation_index];
     if (!provocation) {
       res.status(404).json({ error: "not_found" });

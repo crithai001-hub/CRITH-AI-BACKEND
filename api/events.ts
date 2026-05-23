@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { applyCors, handlePreflight } from "../lib/cors.js";
 import { getUserFromRequest } from "../lib/auth.js";
 import { supabaseService } from "../lib/supabase.js";
+import { resolveFlagItems } from "../lib/flag-resolution.js";
 import type {
   EventsRequestBody,
   EventType,
@@ -84,8 +85,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const validations = (analysis.validations ?? []) as Validation[];
     const suppressed = (analysis.suppressed_validations ?? []) as Validation[];
     const provocations = (analysis.provocations ?? []) as Provocation[];
-    const items: Array<Validation | Provocation> =
-      validations.length > 0 ? [...validations, ...suppressed] : provocations;
+    const items = resolveFlagItems(validations, suppressed, provocations);
     const item = items[body.provocation_index];
     if (!item) {
       res
