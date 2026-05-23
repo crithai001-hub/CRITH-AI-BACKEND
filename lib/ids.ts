@@ -3,9 +3,11 @@
 // dedupes hosts by provocation_id, so refire stability is what stops the
 // teardown + re-render flicker the frontend brief calls out.
 //
-// We truncate anchors to 60 chars before hashing so the ID survives the
+// We truncate anchors to 40 chars before hashing so the ID survives the
 // frontend's refire scenario where the response grows and the extracted
-// anchor extends beyond the original 30-80 char window.
+// anchor extends beyond the original 30-80 char window. 40 (not 60) so a
+// 46-char short anchor and its 70-char refire-extended sibling hash to the
+// same key.
 
 const ANCHOR_PREFIX_LEN = 40;
 
