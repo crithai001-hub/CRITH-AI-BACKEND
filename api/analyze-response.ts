@@ -121,7 +121,7 @@ async function insertAnalysisRow(input: InsertRowInput): Promise<string | null> 
 
 // Build the flat flags[] array with stable IDs, tier markers, and indices.
 // Inline tier first (preserves prior ranking expectations); suppressed second.
-function buildFlags(
+export function buildFlags(
   validations: readonly Validation[],
   suppressed: readonly Validation[],
   analysisId: string
@@ -148,11 +148,11 @@ function buildFlags(
 // Server-side verify-gate: hallucination_signal high|medium → verify true.
 // Matches the extension's current frontend filter — moved here so the
 // frontend can drop its filterClaimsForVerify pass entirely.
-function verifyEligible(claim: VerifiableClaim): boolean {
+export function verifyEligible(claim: VerifiableClaim): boolean {
   return claim.hallucination_signal === "high" || claim.hallucination_signal === "medium";
 }
 
-function enrichClaims(
+export function enrichClaims(
   claims: readonly VerifiableClaim[],
   analysisId: string
 ): EnrichedVerifiableClaim[] {

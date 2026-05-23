@@ -5,7 +5,7 @@ import { incrementResponseAnalysesQuota } from "../lib/quota.js";
 import { explainProvocation } from "../lib/explainer.js";
 import { supabaseService } from "../lib/supabase.js";
 import { EXPLAINER_PROMPT_VERSION } from "../prompts/explainer-system-prompt.js";
-import type { ExplainRequestBody, Provocation } from "../types/index.js";
+import type { ExplainRequestBody, Lens, Provocation, Validation } from "../types/index.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -44,9 +44,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     }
 
     // Service-role client bypasses RLS, so verify ownership explicitly.
+    // v14+: read validations in addition to legacy provocations.
+    // v24+: read suppressed_validations so provocation_index resolves correctly
+    // against the combined flags[] array built by buildFlags (validations first,
+    // suppressed_validations second).
     const { data: analysis, error: lookupError } = await supabaseService
       .from("response_analyses")
-      .select("user_id, provocations, original_prompt, original_response")
+      .select("user_id, provocations, validations, suppressed_validations, original_prompt, original_response")
       .eq("id", body.analysis_id)
       .maybeSingle();
 
@@ -60,8 +64,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
+    // Prefer v14+ validations; fall back to legacy provocations. Build the same
+    // combined array as buildFlags (validations first, suppressed_validations
+    // second) so provocation_index is correctly aligned with the flags[] array.
+    const validations = (analysis.validations ?? []) as Validation[];
+    const suppressed = (analysis.suppressed_validations ?? []) as Validation[];
     const provocations = (analysis.provocations ?? []) as Provocation[];
-    const provocation = provocations[body.provocation_index];
+    const items: Array<Validation | Provocation> =
+      validations.length > 0 ? [...validations, ...suppressed] : provocations;
+    const provocation = items[body.provocation_index];
     if (!provocation) {
       res.status(404).json({ error: "not_found" });
       return;
@@ -88,13 +99,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
+    // Normalize the resolved item to the shape explainProvocation expects.
+    // Legacy Provocation rows already have `question`; v14+ Validation rows use
+    // `follow_up_prompt` (the ready-to-send form of the same concept).
+    const normalizedProvocation: Pick<Provocation, "question" | "lens" | "anchored_to"> =
+      "question" in provocation
+        ? provocation
+        : { question: provocation.follow_up_prompt, lens: provocation.lens as Lens, anchored_to: provocation.anchored_to };
+
     const start = Date.now();
     let result;
     try {
       result = await explainProvocation(
         analysis.original_prompt as string,
         analysis.original_response as string,
-        provocation
+        normalizedProvocation
       );
     } catch (err) {
       console.error("[explain-provocation] claude error", err);

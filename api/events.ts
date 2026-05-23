@@ -59,9 +59,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     // Verify the analysis belongs to this user, and fetch both the legacy
     // provocations and the v14+ validations columns so we can denormalize
     // lens/severity onto the event row regardless of which schema produced it.
+    // v24+: also fetch suppressed_validations so provocation_index resolves
+    // correctly against the combined flags[] array built by buildFlags.
     const { data: analysis, error: lookupError } = await supabaseService
       .from("response_analyses")
-      .select("user_id, provocations, validations")
+      .select("user_id, provocations, validations, suppressed_validations")
       .eq("id", body.analysis_id)
       .maybeSingle();
 
@@ -75,12 +77,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    // Prefer v14 validations; fall back to legacy provocations. Both shapes
+    // Prefer v14+ validations; fall back to legacy provocations. Both shapes
     // expose the lens/severity fields the events table denormalizes.
+    // v24+: build the same combined array as buildFlags (validations first,
+    // suppressed_validations second) so provocation_index is correctly aligned.
     const validations = (analysis.validations ?? []) as Validation[];
+    const suppressed = (analysis.suppressed_validations ?? []) as Validation[];
     const provocations = (analysis.provocations ?? []) as Provocation[];
     const items: Array<Validation | Provocation> =
-      validations.length > 0 ? validations : provocations;
+      validations.length > 0 ? [...validations, ...suppressed] : provocations;
     const item = items[body.provocation_index];
     if (!item) {
       res
