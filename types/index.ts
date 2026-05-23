@@ -11,10 +11,17 @@ export interface ConversationTurn {
   content: string;
 }
 
+// Widened to include hallucination + sycophancy so the inline-pick lens
+// priority covers every value the frontend ranks. The validator prompt does
+// not currently emit hallucination (claim extractor's territory) or sycophancy
+// (separate prompt, not yet implemented), but the type completeness keeps the
+// server-side inline-pick honest and matches the frontend's enum exactly.
 export type Lens =
-  | "missing_angle"
-  | "hidden_assumption"
+  | "hallucination"
+  | "sycophancy"
   | "confidence_evidence_gap"
+  | "hidden_assumption"
+  | "missing_angle"
   | "question_mismatch";
 
 export type Severity = "high" | "medium" | "low";
@@ -81,6 +88,26 @@ export interface Validation {
   severity: Severity;
 }
 
+// v25+: flat enriched flag shape returned in the new `flags[]` array. Same
+// underlying content as a Validation, plus stable id, analysis_id, an index
+// into the flat array, and a tier marker so the extension can group panel
+// entries without needing a second array. The extension keys host dedup by
+// provocation_id — refires of the same logical flag (same lens + anchored_to)
+// return the same id so old hosts stay put instead of tearing down.
+export type FlagTier = "inline" | "suppressed";
+
+export interface Flag {
+  provocation_id: string;
+  analysis_id: string;
+  provocation_index: number;
+  problem: string;
+  follow_up_prompt: string;
+  lens: Lens;
+  anchored_to: string;
+  severity: Severity;
+  tier: FlagTier;
+}
+
 export interface ClaudeAnalysisResult {
   skip: boolean;
   validations: Validation[];
@@ -93,12 +120,14 @@ export type AnalyzeResponse =
   | { skip: true; reason: SkipReason; analysis_id: string }
   | {
       skip: false;
+      // Legacy v24 fields. Kept populated for older extensions; new clients
+      // should read `flags` and `verifiable_claims` (now enriched) instead.
       validations: Validation[];
-      // v24+: optional for backwards compatibility with old extensions reading
-      // this payload. New extension code should expect this array and render
-      // the report panel from it. Empty array == nothing to expand.
       suppressed: Validation[];
-      verifiable_claims: VerifiableClaim[];
+      // v25+ wire shape — flat, enriched, server-curated.
+      flags: Flag[];
+      inline_flag_id: string | null;
+      verifiable_claims: EnrichedVerifiableClaim[];
       analysis_id: string;
       prompt_versions: PromptVersions;
     }
@@ -177,6 +206,18 @@ export interface VerifiableClaim {
   hallucination_reason: string;
 }
 
+// v25+: enriched claim shape returned on the wire. claim_text is an alias for
+// claim (kept on the raw VerifiableClaim for backward compat); verify is the
+// server-decided gate the extension trusts to decide whether to fire
+// /api/verify-claim.
+export interface EnrichedVerifiableClaim extends VerifiableClaim {
+  claim_id: string;
+  claim_index: number;
+  analysis_id: string;
+  claim_text: string;
+  verify: boolean;
+}
+
 export interface ClaimExtractorResult {
   skip: boolean;
   verifiable_claims: VerifiableClaim[];
@@ -193,6 +234,10 @@ export interface VerifyRequestBody {
 export type VerifyResponse =
   | {
       verdict: Verdict;
+      // v25+ alias of evidence_summary. Both are returned with the same value;
+      // new clients should read `evidence`, old clients keep reading
+      // `evidence_summary`.
+      evidence: string;
       evidence_summary: string;
       source_urls: string[];
       verification_id: string;
