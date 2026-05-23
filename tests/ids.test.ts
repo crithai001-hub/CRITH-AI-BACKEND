@@ -24,7 +24,7 @@ describe("flagId", () => {
     expect(flagId("missing_angle", anchor)).not.toBe(flagId("hidden_assumption", anchor));
   });
 
-  it("is stable when the anchor grows past 60 chars (refire scenario)", () => {
+  it("is stable when the anchor extends in a refire", () => {
     const shortAnchor = "the user's specific budget constraint of $5000";
     const longAnchor = shortAnchor + " over the next 12 months";
     expect(flagId("missing_angle", shortAnchor)).toBe(flagId("missing_angle", longAnchor));
