@@ -6,6 +6,8 @@ import { incrementResponseAnalysesQuota } from "../lib/quota.js";
 import { analyzeResponse, truncateResponse } from "../lib/claude.js";
 import { extractClaims } from "../lib/claim-extractor.js";
 import { anchorsOverlap } from "../lib/anchor.js";
+import { flagId, claimId, disambiguate } from "../lib/ids.js";
+import { pickInlineFlag } from "../lib/inline-pick.js";
 import { supabaseService } from "../lib/supabase.js";
 import { validateConversationHistory } from "../lib/validate-history.js";
 import { SYSTEM_PROMPT_VERSION } from "../prompts/system-prompt.js";
@@ -13,6 +15,8 @@ import { CLAIM_EXTRACTOR_VERSION } from "../prompts/claim-extractor-prompt.js";
 import type {
   AnalyzeRequestBody,
   ConversationTurn,
+  EnrichedVerifiableClaim,
+  Flag,
   Platform,
   PromptVersions,
   SkipReason,
@@ -113,6 +117,55 @@ async function insertAnalysisRow(input: InsertRowInput): Promise<string | null> 
     return null;
   }
   return (data?.id as string) ?? null;
+}
+
+// Build the flat flags[] array with stable IDs, tier markers, and indices.
+// Inline tier first (preserves prior ranking expectations); suppressed second.
+function buildFlags(
+  validations: readonly Validation[],
+  suppressed: readonly Validation[],
+  analysisId: string
+): Flag[] {
+  const raw: Array<{ v: Validation; tier: "inline" | "suppressed" }> = [
+    ...validations.map((v) => ({ v, tier: "inline" as const })),
+    ...suppressed.map((v) => ({ v, tier: "suppressed" as const }))
+  ];
+  const rawIds = raw.map(({ v }) => flagId(v.lens, v.anchored_to));
+  const stableIds = disambiguate(rawIds);
+  return raw.map(({ v, tier }, idx) => ({
+    provocation_id: stableIds[idx]!,
+    analysis_id: analysisId,
+    provocation_index: idx,
+    problem: v.problem,
+    follow_up_prompt: v.follow_up_prompt,
+    lens: v.lens,
+    anchored_to: v.anchored_to,
+    severity: v.severity,
+    tier
+  }));
+}
+
+// Server-side verify-gate: hallucination_signal high|medium → verify true.
+// Matches the extension's current frontend filter — moved here so the
+// frontend can drop its filterClaimsForVerify pass entirely.
+function verifyEligible(claim: VerifiableClaim): boolean {
+  return claim.hallucination_signal === "high" || claim.hallucination_signal === "medium";
+}
+
+function enrichClaims(
+  claims: readonly VerifiableClaim[],
+  analysisId: string
+): EnrichedVerifiableClaim[] {
+  const rawIds = claims.map((c) => claimId(c.claim_type, c.anchored_to));
+  const stableIds = disambiguate(rawIds);
+  return claims.map((c, idx) => ({
+    ...c,
+    claim_id: stableIds[idx]!,
+    claim_index: idx,
+    analysis_id: analysisId,
+    claim_text: c.claim,
+    verify: verifyEligible(c)
+  }));
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
@@ -357,11 +410,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
+    const flags = buildFlags(validations, suppressed_validations, analysisId);
+    const inline_flag_id = pickInlineFlag(flags, body.prompt.length);
+    const enrichedClaims = enrichClaims(verifiable_claims, analysisId);
+
     res.status(200).json({
       skip: false,
+      // Legacy shape kept for backward compat with v23.x extensions.
       validations,
       suppressed: suppressed_validations,
-      verifiable_claims,
+      // v25+ shape — flat, enriched, server-curated. New extensions read these.
+      flags,
+      inline_flag_id,
+      verifiable_claims: enrichedClaims,
       analysis_id: analysisId,
       prompt_versions
     });
