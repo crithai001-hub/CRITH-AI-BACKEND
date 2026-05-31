@@ -76,6 +76,7 @@ interface InsertRowInput {
   tokens_out: number;
   cached_tokens: number;
   latency_ms: number;
+  claim_extractor_version: string | null;
   claim_extractor_tokens_in: number | null;
   claim_extractor_tokens_out: number | null;
 }
@@ -101,7 +102,7 @@ async function insertAskCrithRow(input: InsertRowInput): Promise<string | null> 
       validations: input.validations,
       suppressed_validations: input.suppressed_validations,
       verifiable_claims: input.verifiable_claims,
-      claim_extractor_version: ASK_CRITH_EXTRACTOR_VERSION,
+      claim_extractor_version: input.claim_extractor_version,
       claim_extractor_tokens_in: input.claim_extractor_tokens_in,
       claim_extractor_tokens_out: input.claim_extractor_tokens_out,
       original_prompt: input.body.prompt,
@@ -159,6 +160,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         tokens_out: 0,
         cached_tokens: 0,
         latency_ms: 0,
+        claim_extractor_version: null,
         claim_extractor_tokens_in: null,
         claim_extractor_tokens_out: null
       });
@@ -190,6 +192,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         tokens_out: 0,
         cached_tokens: 0,
         latency_ms: 0,
+        claim_extractor_version: null,
         claim_extractor_tokens_in: null,
         claim_extractor_tokens_out: null
       });
@@ -250,6 +253,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         tokens_out: validatorUsage?.tokens_out ?? 0,
         cached_tokens: validatorUsage?.cached_tokens ?? 0,
         latency_ms,
+        claim_extractor_version: ASK_CRITH_EXTRACTOR_VERSION,
         claim_extractor_tokens_in: extractorUsage?.tokens_in ?? null,
         claim_extractor_tokens_out: extractorUsage?.tokens_out ?? null
       });
@@ -326,11 +330,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     );
 
     const validatorSkipped = validatorResult ? validatorResult.result.skip : true;
+    // Treat as skipped when there's nothing left to render after anchor enforcement +
+    // dedup, regardless of whether the validator itself declared skip. This covers
+    // the case where validator returned items but all anchors failed the
+    // selected_text substring check.
     const skipped =
-      validatorSkipped &&
-      claimsInSelection.length === 0 &&
+      validations.length === 0 &&
       suppressed_validations.length === 0 &&
-      validations.length === 0;
+      claimsInSelection.length === 0;
 
     const validatorFailureReason: SkipReason | null = validatorOk
       ? null
@@ -356,6 +363,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       tokens_out: validatorUsage?.tokens_out ?? 0,
       cached_tokens: validatorUsage?.cached_tokens ?? 0,
       latency_ms,
+      claim_extractor_version: ASK_CRITH_EXTRACTOR_VERSION,
       claim_extractor_tokens_in: extractorUsage?.tokens_in ?? null,
       claim_extractor_tokens_out: extractorUsage?.tokens_out ?? null
     });
