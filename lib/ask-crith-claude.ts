@@ -167,7 +167,27 @@ function parseValidatorOutput(rawText: string, selectedText: string): ClaudeAnal
   const validations: Validation[] = [];
   for (const raw of obj.validations) {
     const v = validateValidation(raw, selectedText, "validations");
-    if (v !== null) validations.push(v);
+    if (v === null) {
+      // Distinguish hard-fail (bad shape / enum) from soft-drop (length / anchor).
+      // validateValidation returns null in BOTH cases. On hard-fail we want the
+      // whole batch to fail so the retry path triggers; on soft-drop we just
+      // skip the item.
+      if (!raw || typeof raw !== "object") return null;
+      const rv = raw as Record<string, unknown>;
+      if (
+        typeof rv.problem !== "string" ||
+        typeof rv.follow_up_prompt !== "string" ||
+        typeof rv.lens !== "string" ||
+        typeof rv.anchored_to !== "string" ||
+        typeof rv.severity !== "string" ||
+        !VALID_LENSES.has(rv.lens as string) ||
+        !VALID_SEVERITIES.has(rv.severity as string)
+      ) {
+        return null;
+      }
+      continue;
+    }
+    validations.push(v);
   }
 
   const suppressed: Validation[] = [];
