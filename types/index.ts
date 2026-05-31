@@ -33,7 +33,12 @@ export type SkipReason =
   | "deterministic_task"
   | "parse_error"
   | "quota_exceeded"
-  | "claude_error";
+  | "claude_error"
+  | "ask_too_short"
+  | "ask_no_substance"
+  | "ask_pure_syntax";
+
+export type AnalysisKind = "response_analysis" | "ask_crith";
 
 export type EventType =
   | "shown"
@@ -53,6 +58,16 @@ export interface AnalyzeRequestBody {
   conversation_id: string;
   message_id: string;
   conversation_history?: ConversationTurn[];
+}
+
+export interface AskCrithRequestBody {
+  selected_text: string;
+  context_before: string;
+  context_after: string;
+  prompt: string;
+  platform: Platform;
+  conversation_id: string;
+  message_id: string;
 }
 
 export interface ExplainRequestBody {
@@ -167,6 +182,11 @@ export type EventsResponse =
 export interface TriggerGateResult {
   skip: boolean;
   reason?: Extract<SkipReason, "trivial" | "code" | "factual" | "deterministic_task">;
+}
+
+export interface AskCrithTriggerGateResult {
+  skip: boolean;
+  reason?: Extract<SkipReason, "ask_too_short" | "ask_pure_syntax">;
 }
 
 export interface ClaudeUsage {
