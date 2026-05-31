@@ -129,3 +129,46 @@ describe("ask-crith body validation", () => {
     expect(isValidBody(42)).toBe(false);
   });
 });
+
+import { neutralizeTerminators } from "../prompts/ask-crith-validator-prompt.js";
+
+describe("neutralizeTerminators", () => {
+  it("passes through text with no terminators unchanged", () => {
+    expect(neutralizeTerminators("plain text with no XML tags")).toBe(
+      "plain text with no XML tags"
+    );
+  });
+
+  it("preserves unrelated angle brackets (HTML, code, etc.)", () => {
+    const input = "<div>hello</div> and <p>x</p>";
+    expect(neutralizeTerminators(input)).toBe(input);
+  });
+
+  it("neutralizes </selection>", () => {
+    const result = neutralizeTerminators("before </selection> after");
+    expect(result).not.toContain("</selection>");
+    expect(result).toContain("/selection>"); // the rest is intact
+    expect(result.length).toBe("before </selection> after".length + 1); // +1 for ZWS
+  });
+
+  it("neutralizes all four terminators", () => {
+    const result = neutralizeTerminators(
+      "</selection> </context_before> </context_after> </originating_prompt>"
+    );
+    expect(result).not.toContain("</selection>");
+    expect(result).not.toContain("</context_before>");
+    expect(result).not.toContain("</context_after>");
+    expect(result).not.toContain("</originating_prompt>");
+  });
+
+  it("handles case-insensitive terminators", () => {
+    const result = neutralizeTerminators("</SELECTION> </Context_Before>");
+    expect(result).not.toContain("</SELECTION>");
+    expect(result).not.toContain("</Context_Before>");
+  });
+
+  it("handles multiple occurrences in one string", () => {
+    const result = neutralizeTerminators("</selection> middle </selection>");
+    expect(result.match(/<\/selection>/g)).toBe(null);
+  });
+});

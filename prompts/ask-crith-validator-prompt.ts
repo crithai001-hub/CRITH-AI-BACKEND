@@ -87,7 +87,7 @@ Rules:
 // the XML-like block from the model's perspective. Only the four terminators we use are
 // neutralized — every other `<` and `>` passes through untouched so legitimate
 // HTML/XML/code content in the selection is preserved.
-function neutralizeTerminators(text: string): string {
+export function neutralizeTerminators(text: string): string {
   return text
     .replace(/<\/selection>/gi, "<\u200B/selection>")
     .replace(/<\/context_before>/gi, "<\u200B/context_before>")
