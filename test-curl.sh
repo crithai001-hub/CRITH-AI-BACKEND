@@ -252,5 +252,55 @@ else
   echo "Case 10 skipped — no analysis_id from case 9."
 fi
 
+curl_case_ask() {
+  local label="$1"
+  local body="$2"
+  echo
+  echo "=== $label ==="
+  curl -sS -X POST "$BASE_URL/api/ask-crith" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TEST_TOKEN" \
+    -H "Origin: chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef" \
+    -d "$body" \
+    | (command -v jq >/dev/null && jq . || cat)
+}
+
+# ============================================================================
+# /api/ask-crith — selection-based critique endpoint
+# ============================================================================
+
+curl_case_ask "ask-crith / substantive selection" \
+  '{
+    "selected_text": "Most startups fail in their first year because founders refuse to validate their assumptions before writing code, and 73% of teams that skip discovery interviews end up rebuilding their entire product within six months.",
+    "context_before": "Sure! Here is what I think about your idea: ",
+    "context_after": " That is why discovery matters.",
+    "prompt": "What do you think of my SaaS idea?",
+    "platform": "chatgpt",
+    "conversation_id": "smoke-ask-1",
+    "message_id": "ask-smoke-220-abc"
+  }'
+
+curl_case_ask "ask-crith / URL-only selection (gate skip)" \
+  '{
+    "selected_text": "https://example.com/very/long/path?query=string-that-should-skip",
+    "context_before": "",
+    "context_after": "",
+    "prompt": "",
+    "platform": "chatgpt",
+    "conversation_id": "smoke-ask-2",
+    "message_id": "ask-smoke-skip-abc"
+  }'
+
+curl_case_ask "ask-crith / too-short selection (400 bad request)" \
+  '{
+    "selected_text": "too short",
+    "context_before": "",
+    "context_after": "",
+    "prompt": "",
+    "platform": "chatgpt",
+    "conversation_id": "smoke-ask-3",
+    "message_id": "ask-smoke-bad-abc"
+  }'
+
 echo
 echo "Done. Inspect output above. For each case verify the skip/reason or validations match expectations."
