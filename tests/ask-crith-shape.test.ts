@@ -76,3 +76,56 @@ describe("ask-crith shape (pipeline reuse)", () => {
     expect(verifyEligible({ ...base, hallucination_signal: "none" })).toBe(false);
   });
 });
+
+import { isValidBody } from "../api/ask-crith.js";
+
+describe("ask-crith body validation", () => {
+  const valid = {
+    selected_text: "x".repeat(50) + " ",
+    context_before: "before",
+    context_after: "after",
+    prompt: "what did the AI say",
+    platform: "chatgpt" as const,
+    conversation_id: "c1",
+    message_id: "ask-s1-50-abc"
+  };
+
+  it("accepts a well-formed body", () => {
+    expect(isValidBody(valid)).toBe(true);
+  });
+
+  it("rejects selected_text below the 40-char minimum", () => {
+    expect(isValidBody({ ...valid, selected_text: "too short" })).toBe(false);
+  });
+
+  it("rejects selected_text above 5000 chars", () => {
+    expect(isValidBody({ ...valid, selected_text: "a".repeat(5001) + " " })).toBe(false);
+  });
+
+  it("rejects oversized context_before", () => {
+    expect(isValidBody({ ...valid, context_before: "x".repeat(201) })).toBe(false);
+  });
+
+  it("rejects oversized context_after", () => {
+    expect(isValidBody({ ...valid, context_after: "x".repeat(201) })).toBe(false);
+  });
+
+  it("rejects oversized prompt", () => {
+    expect(isValidBody({ ...valid, prompt: "x".repeat(2001) })).toBe(false);
+  });
+
+  it("rejects an unknown platform", () => {
+    expect(isValidBody({ ...valid, platform: "bing" })).toBe(false);
+  });
+
+  it("rejects missing fields", () => {
+    const { selected_text, ...rest } = valid;
+    expect(isValidBody(rest)).toBe(false);
+  });
+
+  it("rejects non-object input", () => {
+    expect(isValidBody(null)).toBe(false);
+    expect(isValidBody("string")).toBe(false);
+    expect(isValidBody(42)).toBe(false);
+  });
+});

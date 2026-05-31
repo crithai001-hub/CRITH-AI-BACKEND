@@ -40,7 +40,7 @@ const SELECTION_MAX = 5000;
 const CONTEXT_MAX = 200;
 const PROMPT_MAX = 2000;
 
-function isValidBody(raw: unknown): raw is AskCrithRequestBody {
+export function isValidBody(raw: unknown): raw is AskCrithRequestBody {
   if (!raw || typeof raw !== "object") return false;
   const b = raw as Record<string, unknown>;
   if (
