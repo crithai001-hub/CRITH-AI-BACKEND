@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { flagId, claimId } from "../lib/ids.js";
 import { pickInlineFlag } from "../lib/inline-pick.js";
-import { buildFlags, enrichClaims, verifyEligible } from "../api/analyze-response.js";
+import { buildFlags, enrichClaims, verifyEligible } from "../lib/flag-pipeline.js";
 import type { Flag, Validation, VerifiableClaim } from "../types/index.js";
 
 describe("analyze-response shape", () => {
