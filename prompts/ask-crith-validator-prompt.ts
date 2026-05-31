@@ -81,6 +81,20 @@ Rules:
 - "anchored_to" must be 30-80 chars AND a verbatim substring of the SELECTION (not the context blocks).
 - If skip is true, both arrays must be empty.`;
 
+// Defense against the user content escaping its <selection>/<context_*>/<originating_prompt>
+// block by including the literal closing tag. We insert a zero-width space between `<` and
+// `/` so the closing tag is visually identical to a human reader but no longer terminates
+// the XML-like block from the model's perspective. Only the four terminators we use are
+// neutralized — every other `<` and `>` passes through untouched so legitimate
+// HTML/XML/code content in the selection is preserved.
+function neutralizeTerminators(text: string): string {
+  return text
+    .replace(/<\/selection>/gi, "<\u200B/selection>")
+    .replace(/<\/context_before>/gi, "<\u200B/context_before>")
+    .replace(/<\/context_after>/gi, "<\u200B/context_after>")
+    .replace(/<\/originating_prompt>/gi, "<\u200B/originating_prompt>");
+}
+
 export function buildAskCrithValidatorUserMessage(
   selectedText: string,
   contextBefore: string,
@@ -88,19 +102,19 @@ export function buildAskCrithValidatorUserMessage(
   originatingPrompt: string
 ): string {
   return `<selection>
-${selectedText}
+${neutralizeTerminators(selectedText)}
 </selection>
 
 <context_before>
-${contextBefore}
+${neutralizeTerminators(contextBefore)}
 </context_before>
 
 <context_after>
-${contextAfter}
+${neutralizeTerminators(contextAfter)}
 </context_after>
 
 <originating_prompt>
-${originatingPrompt}
+${neutralizeTerminators(originatingPrompt)}
 </originating_prompt>
 
 Critique the selection and return JSON.`;
