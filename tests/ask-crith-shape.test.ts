@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildFlags, enrichClaims, verifyEligible } from "../lib/flag-pipeline.js";
-import type { Validation, VerifiableClaim } from "../types/index.js";
+import type { EnrichedVerifiableClaim, Validation, VerifiableClaim } from "../types/index.js";
 
 // ask-crith reuses the flag-pipeline helpers with the same contract as
 // analyze-response. These tests pin the shape so future ask-crith changes
@@ -170,5 +170,48 @@ describe("neutralizeTerminators", () => {
   it("handles multiple occurrences in one string", () => {
     const result = neutralizeTerminators("</selection> middle </selection>");
     expect(result.match(/<\/selection>/g)).toBe(null);
+  });
+});
+
+describe("EnrichedVerifiableClaim inline-verify fields", () => {
+  it("accepts optional verdict/evidence/source_urls/verification_id", () => {
+    const claim: EnrichedVerifiableClaim = {
+      claim: "x",
+      anchored_to: "anchor-long-enough-to-pass-the-min-len",
+      claim_type: "statistic",
+      why_verify: "needs check",
+      risk: "medium",
+      hallucination_signal: "high",
+      hallucination_reason: "round number",
+      claim_id: "claim_abc",
+      claim_index: 0,
+      analysis_id: "an-id",
+      claim_text: "x",
+      verify: true,
+      verdict: "confirmed",
+      evidence: "the evidence",
+      source_urls: ["https://example.com"],
+      verification_id: "ver-uuid"
+    };
+    expect(claim.verdict).toBe("confirmed");
+    expect(claim.source_urls).toEqual(["https://example.com"]);
+  });
+
+  it("works without the inline-verify fields", () => {
+    const claim: EnrichedVerifiableClaim = {
+      claim: "x",
+      anchored_to: "anchor-long-enough-to-pass-the-min-len",
+      claim_type: "statistic",
+      why_verify: "needs check",
+      risk: "low",
+      hallucination_signal: "none",
+      hallucination_reason: "widely known",
+      claim_id: "claim_abc",
+      claim_index: 0,
+      analysis_id: "an-id",
+      claim_text: "x",
+      verify: false
+    };
+    expect(claim.verdict).toBeUndefined();
   });
 });

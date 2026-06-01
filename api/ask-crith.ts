@@ -10,6 +10,7 @@ import {
 import { anchorsOverlap } from "../lib/anchor.js";
 import { pickInlineFlag } from "../lib/inline-pick.js";
 import { buildFlags, enrichClaims } from "../lib/flag-pipeline.js";
+import { inlineVerify } from "../lib/inline-verify.js";
 import { supabaseService } from "../lib/supabase.js";
 import {
   ASK_CRITH_VALIDATOR_VERSION
@@ -396,6 +397,50 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const flags = buildFlags(validations, suppressed_validations, analysisId);
     const inline_flag_id = pickInlineFlag(flags, body.prompt.length);
     const enrichedClaims = enrichClaims(claimsInSelection, analysisId);
+
+    // Inline verification: run verifier in parallel for all eligible claims,
+    // gated by quota. Budget is computed up-front (serial quota increments) so
+    // we never queue more than the user's remaining allowance.
+    const verifyStart = Date.now();
+    const eligible = enrichedClaims.filter((c) => c.verify);
+    let verifyBudget = 0;
+    for (let i = 0; i < eligible.length; i++) {
+      const q = await incrementResponseAnalysesQuota(user.user_id);
+      if (q.exceeded) break;
+      verifyBudget++;
+    }
+    const toVerify = eligible.slice(0, verifyBudget);
+    const rawByIndex = new Map(claimsInSelection.map((c, idx) => [idx, c]));
+    const verifyResults = await Promise.all(
+      toVerify.map((c) =>
+        inlineVerify(rawByIndex.get(c.claim_index)!, analysisId, c.claim_index, user.user_id)
+      )
+    );
+    // Attach results back onto enrichedClaims by claim_index (not array position).
+    let verifiedCount = 0;
+    let failedCount = 0;
+    for (let i = 0; i < toVerify.length; i++) {
+      const result = verifyResults[i];
+      const target = enrichedClaims.find((c) => c.claim_index === toVerify[i]!.claim_index);
+      if (!target) continue;
+      if (!result) {
+        failedCount++;
+        continue;
+      }
+      target.verdict = result.verdict;
+      target.evidence = result.evidence;
+      target.source_urls = result.source_urls;
+      target.verification_id = result.verification_id;
+      verifiedCount++;
+    }
+    const verifyLatency = Date.now() - verifyStart;
+    console.info("[ask-crith] inline-verify summary", {
+      eligible: eligible.length,
+      budget: verifyBudget,
+      verified: verifiedCount,
+      failed: failedCount,
+      verify_latency_ms: verifyLatency
+    });
 
     res.status(200).json({
       skip: false,
