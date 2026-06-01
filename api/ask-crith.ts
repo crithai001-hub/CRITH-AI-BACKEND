@@ -3,18 +3,10 @@ import { applyCors, handlePreflight } from "../lib/cors.js";
 import { getUserFromRequest } from "../lib/auth.js";
 import { evaluateAskCrithGate } from "../lib/ask-crith-triggers.js";
 import { incrementResponseAnalysesQuota } from "../lib/quota.js";
-import {
-  runAskCrithValidator,
-  runAskCrithExtractor
-} from "../lib/ask-crith-claude.js";
-import { anchorsOverlap } from "../lib/anchor.js";
-import { pickInlineFlag } from "../lib/inline-pick.js";
+import { runAskCrithExtractor } from "../lib/ask-crith-claude.js";
 import { buildFlags, enrichClaims } from "../lib/flag-pipeline.js";
 import { inlineVerify } from "../lib/inline-verify.js";
 import { supabaseService } from "../lib/supabase.js";
-import {
-  ASK_CRITH_VALIDATOR_VERSION
-} from "../prompts/ask-crith-validator-prompt.js";
 import {
   ASK_CRITH_EXTRACTOR_VERSION
 } from "../prompts/ask-crith-extractor-prompt.js";
@@ -99,7 +91,10 @@ async function insertAskCrithRow(input: InsertRowInput): Promise<string | null> 
       tokens_out: input.tokens_out,
       cached_tokens: input.cached_tokens,
       latency_ms: input.latency_ms,
-      prompt_version: ASK_CRITH_VALIDATOR_VERSION,
+      // Ask-crith only runs the extractor (fact-check mode); tag DB rows with
+      // a sentinel so analytics can filter cleanly. NOT_NULL on the column, so
+      // can't be null — use a stable string instead.
+      prompt_version: "ask-fact-check-only",
       validations: input.validations,
       suppressed_validations: input.suppressed_validations,
       verifiable_claims: input.verifiable_claims,
@@ -205,54 +200,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    // Parallel Haiku calls.
+    // Ask-CRITH is a fact-checker. The user clicked the pill on a selection
+    // because they want to know if it's true. We extract verifiable claims and
+    // verify them inline. We do NOT run the validator (gap-spotter) here —
+    // reasoning critiques belong to the auto-analyze flow on the full response,
+    // not to a user-initiated fact-check action on a slice of it.
     const start = Date.now();
-    const [validatorSettled, extractorSettled] = await Promise.allSettled([
-      runAskCrithValidator(
-        body.selected_text,
-        body.context_before,
-        body.context_after,
-        body.prompt
-      ),
-      runAskCrithExtractor(
-        body.selected_text,
-        body.context_before,
-        body.context_after,
-        body.prompt
-      )
-    ]);
+    const extractorSettled = await runAskCrithExtractor(
+      body.selected_text,
+      body.context_before,
+      body.context_after,
+      body.prompt
+    ).then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason) => ({ status: "rejected" as const, reason })
+    );
     const latency_ms = Date.now() - start;
 
-    if (validatorSettled.status === "rejected") {
-      console.error("[ask-crith] validator rejected", validatorSettled.reason);
-    } else if (!validatorSettled.value.ok) {
-      console.warn("[ask-crith] validator parse_error");
-    }
     if (extractorSettled.status === "rejected") {
       console.error("[ask-crith] extractor rejected", extractorSettled.reason);
     } else if (!extractorSettled.value.ok) {
       console.warn("[ask-crith] extractor parse_error");
     }
 
-    const validatorOk = validatorSettled.status === "fulfilled" && validatorSettled.value.ok;
-    const extractorOk = extractorSettled.status === "fulfilled" && extractorSettled.value.ok;
+    const extractorOk =
+      extractorSettled.status === "fulfilled" && extractorSettled.value.ok;
 
-    if (!validatorOk && !extractorOk) {
-      const validatorUsage =
-        validatorSettled.status === "fulfilled" ? validatorSettled.value.usage : null;
+    if (!extractorOk) {
       const extractorUsage =
         extractorSettled.status === "fulfilled" ? extractorSettled.value.usage : null;
       await insertAskCrithRow({
         user_id: user.user_id,
         body,
         skipped: true,
-        skip_reason: validatorSettled.status === "rejected" ? "claude_error" : "parse_error",
+        skip_reason: extractorSettled.status === "rejected" ? "claude_error" : "parse_error",
         validations: [],
         suppressed_validations: [],
         verifiable_claims: [],
-        tokens_in: validatorUsage?.tokens_in ?? 0,
-        tokens_out: validatorUsage?.tokens_out ?? 0,
-        cached_tokens: validatorUsage?.cached_tokens ?? 0,
+        tokens_in: 0,
+        tokens_out: 0,
+        cached_tokens: 0,
         latency_ms,
         claim_extractor_version: ASK_CRITH_EXTRACTOR_VERSION,
         claim_extractor_tokens_in: extractorUsage?.tokens_in ?? null,
@@ -262,19 +249,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    const validatorResult =
-      validatorSettled.status === "fulfilled" && validatorSettled.value.ok
-        ? validatorSettled.value
-        : null;
-    const extractorResult =
-      extractorSettled.status === "fulfilled" && extractorSettled.value.ok
-        ? extractorSettled.value
-        : null;
-
-    const rawValidations: Validation[] =
-      validatorResult && !validatorResult.result.skip ? validatorResult.result.validations : [];
-    const rawSuppressed: Validation[] =
-      validatorResult && !validatorResult.result.skip ? validatorResult.result.suppressed : [];
+    const extractorResult = extractorSettled.value.ok ? extractorSettled.value : null;
     const verifiable_claims: VerifiableClaim[] =
       extractorResult && !extractorResult.result.skip
         ? extractorResult.result.verifiable_claims
@@ -283,17 +258,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     // Defensive post-check: anchored_to MUST be a verbatim substring of
     // selected_text. The Claude wrapper already enforces this via recoverAnchor,
     // but the second pass here catches any drift and emits a clear log line.
-    const dropIfNotInSelection = (items: Validation[], tier: string): Validation[] =>
-      items.filter((v) => {
-        const ok = body.selected_text.includes(v.anchored_to);
-        if (!ok) {
-          console.info(`[ask-crith] dropping ${tier}: anchor not in selection`, {
-            lens: v.lens,
-            anchor_preview: v.anchored_to.slice(0, 80)
-          });
-        }
-        return ok;
-      });
     const claimsInSelection = verifiable_claims.filter((c) => {
       const ok = body.selected_text.includes(c.anchored_to);
       if (!ok) {
@@ -305,51 +269,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return ok;
     });
 
-    // Dedup validations against claim anchors (same rule as analyze-response).
-    const dedupAgainstClaims = (items: Validation[], tier: string): Validation[] =>
-      items.filter((v) => {
-        const overlap = claimsInSelection.find((c) =>
-          anchorsOverlap(body.selected_text, v.anchored_to, c.anchored_to)
-        );
-        if (overlap) {
-          console.info(`[ask-crith] dropping ${tier} item: overlaps claim anchor`, {
-            lens: v.lens,
-            item_anchor_preview: v.anchored_to.slice(0, 80),
-            claim_anchor_preview: overlap.anchored_to.slice(0, 80)
-          });
-          return false;
-        }
-        return true;
-      });
-    const validations = dedupAgainstClaims(
-      dropIfNotInSelection(rawValidations, "validation"),
-      "validation"
-    );
-    const suppressed_validations = dedupAgainstClaims(
-      dropIfNotInSelection(rawSuppressed, "suppressed"),
-      "suppressed"
-    );
+    // Validator is intentionally not run in ask-crith — these stay empty so the
+    // response shape parity with analyze-response is preserved on the wire.
+    const validations: Validation[] = [];
+    const suppressed_validations: Validation[] = [];
 
-    const validatorSkipped = validatorResult ? validatorResult.result.skip : true;
-    // Treat as skipped when there's nothing left to render after anchor enforcement +
-    // dedup, regardless of whether the validator itself declared skip. This covers
-    // the case where validator returned items but all anchors failed the
-    // selected_text substring check.
-    const skipped =
-      validations.length === 0 &&
-      suppressed_validations.length === 0 &&
-      claimsInSelection.length === 0;
+    const skipped = claimsInSelection.length === 0;
+    const skipReason: SkipReason | null = skipped ? "ask_no_substance" : null;
 
-    const validatorFailureReason: SkipReason | null = validatorOk
-      ? null
-      : validatorSettled.status === "rejected"
-        ? "claude_error"
-        : "parse_error";
-    const skipReason: SkipReason | null = skipped
-      ? (validatorFailureReason ?? "ask_no_substance")
-      : null;
-
-    const validatorUsage = validatorResult?.usage;
     const extractorUsage = extractorResult?.usage;
 
     const analysisId = await insertAskCrithRow({
@@ -360,9 +287,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       validations,
       suppressed_validations,
       verifiable_claims: claimsInSelection,
-      tokens_in: validatorUsage?.tokens_in ?? 0,
-      tokens_out: validatorUsage?.tokens_out ?? 0,
-      cached_tokens: validatorUsage?.cached_tokens ?? 0,
+      tokens_in: 0,
+      tokens_out: 0,
+      cached_tokens: 0,
       latency_ms,
       claim_extractor_version: ASK_CRITH_EXTRACTOR_VERSION,
       claim_extractor_tokens_in: extractorUsage?.tokens_in ?? null,
@@ -374,8 +301,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
+    // Validator is not run in ask-crith; emit a stable sentinel for the field
+    // so the frontend's renderer (which expects both keys) doesn't break.
     const prompt_versions: PromptVersions = {
-      validator: ASK_CRITH_VALIDATOR_VERSION,
+      validator: "not_run",
       claim_extractor: ASK_CRITH_EXTRACTOR_VERSION
     };
 
@@ -394,8 +323,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
+    // No validator output → flags are always empty and there's no inline flag
+    // to pick. buildFlags([], [], ...) returns []; calling it for shape parity.
     const flags = buildFlags(validations, suppressed_validations, analysisId);
-    const inline_flag_id = pickInlineFlag(flags, body.prompt.length);
+    const inline_flag_id: string | null = null;
     const enrichedClaims = enrichClaims(claimsInSelection, analysisId);
 
     // Inline verification: run verifier in parallel for all eligible claims,
