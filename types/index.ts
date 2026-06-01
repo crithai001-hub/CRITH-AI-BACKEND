@@ -236,6 +236,12 @@ export interface EnrichedVerifiableClaim extends VerifiableClaim {
   analysis_id: string;
   claim_text: string;
   verify: boolean;
+  // Inline-verification fields. Populated only when ask-crith ran the verifier
+  // inline. When absent, the frontend may call /api/verify-claim to fetch.
+  verdict?: Verdict;
+  evidence?: string;
+  source_urls?: string[];
+  verification_id?: string;
 }
 
 export interface ClaimExtractorResult {
