@@ -81,6 +81,7 @@ export function parseGeminiGroundingResults(raw: unknown): BraveSearchResult[] {
 export interface BraveSearchSuccess {
   ok: true;
   results: BraveSearchResult[];
+  search_query: string;
 }
 export interface BraveSearchError {
   ok: false;
@@ -89,12 +90,28 @@ export interface BraveSearchError {
 }
 export type BraveSearchOutcome = BraveSearchSuccess | BraveSearchError;
 
+/**
+ * Wraps the raw claim text in an explicit verification framing so Gemini's
+ * grounding tool tries both direct lookup and indirect/contextual search when
+ * the exact wording has no direct hits.
+ */
+export function buildSearchPrompt(claim: string): string {
+  return `Use Google Search to find evidence that confirms, refutes, or contextualizes this factual claim. If you can't find direct evidence for the exact wording, search for the underlying topic — the cited study, the named person's actual role, the product's actual specs, the date range — and surface whatever evidence is closest. Always include sources via the grounding tool.
+
+CLAIM:
+"""
+${claim}
+"""`;
+}
+
 export async function searchClaim(query: string): Promise<BraveSearchOutcome> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return { ok: false, reason: "no_api_key" };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  const promptText = buildSearchPrompt(query);
 
   let response: Response;
   try {
@@ -105,7 +122,7 @@ export async function searchClaim(query: string): Promise<BraveSearchOutcome> {
         "x-goog-api-key": apiKey
       },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: query }] }],
+        contents: [{ parts: [{ text: promptText }] }],
         tools: [{ google_search: {} }]
       }),
       signal: controller.signal
@@ -129,5 +146,9 @@ export async function searchClaim(query: string): Promise<BraveSearchOutcome> {
     return { ok: false, reason: "parse_error" };
   }
 
-  return { ok: true, results: parseGeminiGroundingResults(payload) };
+  // The search_query returned to callers is the raw claim text (user-facing),
+  // not the full framing prompt. Cap at 200 chars.
+  const search_query = query.slice(0, 200);
+
+  return { ok: true, results: parseGeminiGroundingResults(payload), search_query };
 }

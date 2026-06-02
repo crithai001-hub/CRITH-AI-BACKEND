@@ -30,6 +30,7 @@ export interface ParsedVerifierResult {
   verdict: Verdict;
   evidence_summary: string;
   source_urls: string[];
+  follow_up_prompt: string;
 }
 
 function extractFirstJsonBlock(text: string): string | null {
@@ -79,10 +80,19 @@ export function parseVerifierResponse(rawText: string): ParsedVerifierResult | n
   const source_urls = obj.source_urls.filter(
     (u): u is string => typeof u === "string" && u.length > 0
   );
+  if (typeof obj.follow_up_prompt !== "string") return null;
+  const follow_up_prompt = obj.follow_up_prompt.trim();
+  // Soft-cap to 450 chars; truncate rather than reject so a slightly verbose
+  // model still gets a usable response. Drop only if empty.
+  if (follow_up_prompt.length === 0) return null;
+  const capped_follow_up = follow_up_prompt.length > 450
+    ? follow_up_prompt.slice(0, 450)
+    : follow_up_prompt;
   return {
     verdict: obj.verdict as Verdict,
     evidence_summary: obj.evidence_summary,
-    source_urls
+    source_urls,
+    follow_up_prompt: capped_follow_up
   };
 }
 

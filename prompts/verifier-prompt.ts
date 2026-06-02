@@ -1,4 +1,4 @@
-export const VERIFIER_PROMPT_VERSION = "v1";
+export const VERIFIER_PROMPT_VERSION = "v2";
 
 export const VERIFIER_PROMPT = `You evaluate whether a specific factual claim is supported, contradicted, or unverifiable based on web search results.
 
@@ -26,6 +26,20 @@ ERROR: Use only if search results are empty or unusable.
 - If the search results are about a similar but not identical topic — verdict INCONCLUSIVE.
 - Be conservative. INCONCLUSIVE is always a valid answer when evidence is thin. False CONFIRMED or false CONTRADICTED is worse than honest INCONCLUSIVE.
 
+# Follow-up prompt
+
+After judging the claim, produce a short follow-up prompt the user can fire back at the AI that asserted the claim. Rules:
+
+- First person, addressed to the AI ("Earlier you said...", "You claimed...").
+- Reference the specific claim verbatim where possible.
+- Push for evidence, source, or correction depending on the verdict:
+  - CONFIRMED: usually no follow-up needed; if you produce one, ask for a deeper citation or recent update.
+  - CONTRADICTED: ask the AI to correct itself and cite the actual source from the evidence_summary.
+  - INCONCLUSIVE: ask the AI for the underlying source so the user can verify themselves.
+  - ERROR: a one-line nudge asking the AI to restate the claim with attribution.
+- Max 450 characters. Plain prose, no markdown.
+- Example (INCONCLUSIVE): "Earlier you said 73% of startups skip discovery interviews — can you cite the specific study that number comes from? I couldn't find a primary source."
+
 # Output format
 
 Return ONLY valid JSON:
@@ -33,7 +47,8 @@ Return ONLY valid JSON:
 {
   "verdict": "confirmed" | "contradicted" | "inconclusive" | "error",
   "evidence_summary": "string — 2-3 sentences explaining the verdict, citing what the search results showed",
-  "source_urls": ["string", "string"]
+  "source_urls": ["string", "string"],
+  "follow_up_prompt": "string — a first-person ready-to-send prompt the user can fire back at the AI that referenced this claim. Reference the specific claim verbatim where possible. Max 450 chars."
 }`;
 
 export function buildVerifierUserMessage(
