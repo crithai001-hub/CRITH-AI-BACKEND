@@ -8,6 +8,8 @@ export interface InlineVerifyResult {
   evidence: string;
   source_urls: string[];
   verification_id: string;
+  search_query: string;
+  follow_up_prompt: string;
 }
 
 /**
@@ -103,6 +105,8 @@ export async function inlineVerify(
     verdict: result.verdict,
     evidence: result.evidence_summary,
     source_urls: result.source_urls,
-    verification_id: insertRow.id as string
+    verification_id: insertRow.id as string,
+    search_query: search.search_query,
+    follow_up_prompt: result.follow_up_prompt
   };
 }

@@ -269,6 +269,8 @@ export type VerifyResponse =
       evidence_summary: string;
       source_urls: string[];
       verification_id: string;
+      search_query?: string;
+      follow_up_prompt?: string;
     }
   | { error: "unauthorized" }
   | { error: "not_found" }

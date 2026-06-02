@@ -362,6 +362,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       target.evidence = result.evidence;
       target.source_urls = result.source_urls;
       target.verification_id = result.verification_id;
+      target.search_query = result.search_query;
+      target.follow_up_prompt = result.follow_up_prompt;
       verifiedCount++;
     }
     const verifyLatency = Date.now() - verifyStart;

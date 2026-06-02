@@ -132,7 +132,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       evidence: result.evidence_summary,
       evidence_summary: result.evidence_summary,
       source_urls: result.source_urls,
-      verification_id: insertRow.id as string
+      verification_id: insertRow.id as string,
+      search_query: search.search_query,
+      follow_up_prompt: result.follow_up_prompt
     });
   } catch (err) {
     console.error("[verify-claim] unhandled", err);
