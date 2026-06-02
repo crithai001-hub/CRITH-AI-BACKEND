@@ -242,6 +242,8 @@ export interface EnrichedVerifiableClaim extends VerifiableClaim {
   evidence?: string;
   source_urls?: string[];
   verification_id?: string;
+  search_query?: string;
+  follow_up_prompt?: string;
 }
 
 export interface ClaimExtractorResult {
