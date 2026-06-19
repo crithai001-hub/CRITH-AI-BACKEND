@@ -140,11 +140,14 @@ export interface ExtractorResult {
   claims: RawExtractedClaim[];
 }
 
+// was_true_until uses the same optional encoding as VerifyResponse so the
+// internal-to-wire mapping in /api/verify-claim is a direct field copy with no
+// nullable-to-optional conversion.
 export interface VerifierResult {
   verdict: Verdict;
   evidence: string;
   source_urls: string[];
   as_of_date: string;
-  was_true_until: string | null;
+  was_true_until?: string;
   follow_up_prompt: string;
 }

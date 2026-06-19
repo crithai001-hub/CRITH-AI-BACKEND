@@ -1242,7 +1242,6 @@ describe("parseVerifierResponse", () => {
       evidence: "Two recent sources confirm.",
       source_urls: ["https://a.com", "https://b.com"],
       as_of_date: "2026-06-19",
-      was_true_until: null,
       follow_up_prompt: "Earlier you said X — can you share the primary source?"
     });
   });
@@ -1300,7 +1299,7 @@ describe("parseVerifierResponse", () => {
     expect(parseVerifierResponse(json)).toBeNull();
   });
 
-  it("treats missing was_true_until as null", () => {
+  it("treats missing was_true_until as undefined", () => {
     const json = JSON.stringify({
       verdict: "found_supporting",
       evidence: "x",
@@ -1308,7 +1307,19 @@ describe("parseVerifierResponse", () => {
       as_of_date: "2026-06-19",
       follow_up_prompt: "x"
     });
-    expect(parseVerifierResponse(json)!.was_true_until).toBeNull();
+    expect(parseVerifierResponse(json)!.was_true_until).toBeUndefined();
+  });
+
+  it("treats explicit null was_true_until as undefined", () => {
+    const json = JSON.stringify({
+      verdict: "found_supporting",
+      evidence: "x",
+      source_urls: ["https://a.com"],
+      as_of_date: "2026-06-19",
+      was_true_until: null,
+      follow_up_prompt: "x"
+    });
+    expect(parseVerifierResponse(json)!.was_true_until).toBeUndefined();
   });
 
   it("rejects bad was_true_until format", () => {
@@ -1382,9 +1393,11 @@ export function parseVerifierResponse(rawText: string): VerifierResult | null {
   if (!Array.isArray(obj.source_urls)) return null;
   if (typeof obj.as_of_date !== "string" || !ISO_DATE_RE.test(obj.as_of_date)) return null;
 
-  let was_true_until: string | null;
+  // Normalize null and absent to undefined so the wire shape (optional) and the
+  // internal shape (optional) match. Invalid string formats still hard-fail.
+  let was_true_until: string | undefined;
   if (obj.was_true_until === undefined || obj.was_true_until === null) {
-    was_true_until = null;
+    was_true_until = undefined;
   } else if (typeof obj.was_true_until === "string" && ISO_DATE_RE.test(obj.was_true_until)) {
     was_true_until = obj.was_true_until;
   } else {
