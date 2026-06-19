@@ -124,4 +124,16 @@ describe("parseVerifierResponse", () => {
   it("returns null on malformed JSON", () => {
     expect(parseVerifierResponse("not json")).toBeNull();
   });
+
+  it("rejects out-of-range as_of_date that passes the regex", () => {
+    const json = JSON.stringify({
+      verdict: "found_supporting",
+      evidence: "x",
+      source_urls: [],
+      as_of_date: "2026-00-00",
+      was_true_until: null,
+      follow_up_prompt: "x"
+    });
+    expect(parseVerifierResponse(json)).toBeNull();
+  });
 });

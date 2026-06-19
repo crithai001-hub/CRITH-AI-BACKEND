@@ -104,6 +104,9 @@ export function parseExtractorResponse(
 
     const recovered = recoverAnchor(c.anchored_to, source);
     if (recovered === null) continue;
+    // Spec contract: anchored_to is 30-80 chars. recoverAnchor enforces the
+    // lower bound via ANCHOR_MIN_LEN; we enforce the upper bound here.
+    if (recovered.length > 80) continue;
 
     claims.push({
       claim_text: c.claim_text,
@@ -125,6 +128,15 @@ const VALID_VERDICTS = new Set<Verdict>([
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// Regex catches the shape; Date round-trip catches "2026-00-00" and similar
+// out-of-range values that pass the regex but are not real calendar dates.
+function isValidIsoDate(s: string): boolean {
+  if (!ISO_DATE_RE.test(s)) return false;
+  const d = new Date(s + "T00:00:00Z");
+  if (Number.isNaN(d.getTime())) return false;
+  return d.toISOString().slice(0, 10) === s;
+}
+
 export function parseVerifierResponse(rawText: string): VerifierResult | null {
   const jsonText = extractFirstJsonBlock(rawText);
   if (!jsonText) return null;
@@ -143,14 +155,14 @@ export function parseVerifierResponse(rawText: string): VerifierResult | null {
   }
   if (typeof obj.evidence !== "string") return null;
   if (!Array.isArray(obj.source_urls)) return null;
-  if (typeof obj.as_of_date !== "string" || !ISO_DATE_RE.test(obj.as_of_date)) return null;
+  if (typeof obj.as_of_date !== "string" || !isValidIsoDate(obj.as_of_date)) return null;
 
   // Normalize null and absent to undefined so the wire shape (optional) and the
   // internal shape (optional) match. Invalid string formats still hard-fail.
   let was_true_until: string | undefined;
   if (obj.was_true_until === undefined || obj.was_true_until === null) {
     was_true_until = undefined;
-  } else if (typeof obj.was_true_until === "string" && ISO_DATE_RE.test(obj.was_true_until)) {
+  } else if (typeof obj.was_true_until === "string" && isValidIsoDate(obj.was_true_until)) {
     was_true_until = obj.was_true_until;
   } else {
     return null;
