@@ -1,7 +1,7 @@
+// lib/quota.ts
 import { isProUser } from "./plan.js";
 import { supabaseService } from "./supabase.js";
 
-// Returns the current month key in YYYY-MM format (UTC).
 export function monthKey(date: Date = new Date()): string {
   const y = date.getUTCFullYear();
   const m = String(date.getUTCMonth() + 1).padStart(2, "0");
@@ -21,15 +21,21 @@ export interface QuotaIncrementResult {
 }
 
 // Atomically upsert the user_usage row for the current month and increment
-// response_analyses by 1. Returns the post-increment count.
+// the counter by 1. Returns the post-increment count.
+//
+// In the fact-checker MVP, ONLY successful verifications consume quota.
+// Extraction (/api/fact-check, /api/fact-check-selection) does not call this.
+// Parse / Gemini errors do not call this — we eat the cost rather than
+// charging the user for our infra failures.
 //
 // KNOWN LIMITATION: this upsert+check pattern is not strictly atomic across
-// truly concurrent requests from the same user. Under heavy concurrency a user
-// could exceed the limit by 1–2 calls before quota enforcement kicks in.
-// Acceptable for V2 launch volume. Fix path when volume justifies it: wrap in a
-// SQL function with SELECT ... FOR UPDATE or use a Postgres advisory lock keyed
-// on user_id.
-export async function incrementResponseAnalysesQuota(userId: string): Promise<QuotaIncrementResult> {
+// truly concurrent requests from the same user. Under heavy concurrency a
+// user could exceed the limit by 1–2 calls before enforcement kicks in.
+// Acceptable for V2 launch volume. Fix path: wrap in a SQL function with
+// SELECT ... FOR UPDATE or use a Postgres advisory lock keyed on user_id.
+export async function incrementVerificationQuota(
+  userId: string
+): Promise<QuotaIncrementResult> {
   const limit = getMonthlyLimit();
   const key = monthKey();
 
@@ -56,8 +62,6 @@ export async function incrementResponseAnalysesQuota(userId: string): Promise<Qu
     throw new Error(`quota upsert failed: ${error.message}`);
   }
 
-  // Pro users never exceed — the counter still increments for analytics, but
-  // /api/analyze-response and /api/verify-claim won't 429 them.
   const isPro = await isProUser(userId);
   return { used: nextCount, limit, exceeded: !isPro && nextCount > limit };
 }
