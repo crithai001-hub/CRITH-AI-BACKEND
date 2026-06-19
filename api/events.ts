@@ -2,13 +2,50 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { applyCors, handlePreflight } from "../lib/cors.js";
 import { getUserFromRequest } from "../lib/auth.js";
 import { supabaseService } from "../lib/supabase.js";
-import { resolveFlagItems } from "../lib/flag-resolution.js";
-import type {
-  EventsRequestBody,
-  EventType,
-  Provocation,
-  Validation
-} from "../types/index.js";
+
+// Inlined legacy types (these are no longer in types/index.ts).
+type EventType =
+  | "shown"
+  | "expanded"
+  | "sent_to_ai"
+  | "dismissed"
+  | "copied"
+  | "explained"
+  | "useful"
+  | "not_useful"
+  | "asked_ai";
+
+interface EventsRequestBody {
+  analysis_id: string;
+  provocation_index: number;
+  event_type: EventType;
+}
+
+// Minimal shapes for columns still present in the DB (pre-v14 legacy rows).
+interface Provocation {
+  lens: string;
+  severity: string;
+  [key: string]: unknown;
+}
+
+interface Validation {
+  lens: string;
+  severity: string;
+  [key: string]: unknown;
+}
+
+// Inlined from the deleted lib/flag-resolution.ts.
+// Resolves the array used to look up an item by provocation_index.
+function resolveFlagItems(
+  validations: readonly Validation[],
+  suppressed: readonly Validation[],
+  legacyProvocations: readonly Provocation[]
+): Array<Validation | Provocation> {
+  if (validations.length > 0 || suppressed.length > 0) {
+    return [...validations, ...suppressed];
+  }
+  return [...legacyProvocations];
+}
 
 const VALID_EVENTS: ReadonlySet<EventType> = new Set([
   "shown",
