@@ -1,11 +1,11 @@
+// api/verify-claim.ts
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { applyCors, handlePreflight } from "../lib/cors.js";
 import { getUserFromRequest } from "../lib/auth.js";
-import { incrementResponseAnalysesQuota } from "../lib/quota.js";
-import { searchClaim } from "../lib/brave-search.js";
-import { verifyClaim } from "../lib/verifier.js";
+import { incrementVerificationQuota } from "../lib/quota.js";
+import { factCheckVerify } from "../lib/gemini.js";
 import { supabaseService } from "../lib/supabase.js";
-import type { VerifiableClaim, VerifyRequestBody } from "../types/index.js";
+import type { Claim, VerifyRequestBody } from "../types/index.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -43,7 +43,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    // Service-role lookup (bypasses RLS) — verify ownership explicitly.
+    // Service-role lookup; verify ownership explicitly.
     const { data: analysis, error: lookupError } = await supabaseService
       .from("response_analyses")
       .select("user_id, verifiable_claims")
@@ -60,47 +60,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    const claims = (analysis.verifiable_claims ?? []) as VerifiableClaim[];
+    const claims = (analysis.verifiable_claims ?? []) as Claim[];
     const claim = claims[body.claim_index];
     if (!claim) {
       res.status(404).json({ error: "not_found" });
       return;
     }
 
-    // Unified quota — verifications count against the same monthly counter as analyses.
-    const quota = await incrementResponseAnalysesQuota(user.user_id);
+    const start = Date.now();
+    const verifier = await factCheckVerify(claim.claim_text, claim.claim_type);
+    const latency_ms = Date.now() - start;
+
+    if (!verifier.ok) {
+      // Verifier errors do NOT charge quota. We eat the cost.
+      console.error("[verify-claim] verifier failed", { reason: verifier.reason });
+      res.status(500).json({ error: "internal" });
+      return;
+    }
+
+    // Quota counts only on a successful verifier call.
+    const quota = await incrementVerificationQuota(user.user_id);
     if (quota.exceeded) {
       res.status(429).json({ error: "quota_exceeded", limit: quota.limit, used: quota.used });
       return;
     }
 
-    const start = Date.now();
-
-    const search = await searchClaim(claim.claim);
-    if (!search.ok) {
-      console.error("[verify-claim] brave search failed", { reason: search.reason });
-      res.status(500).json({ error: "internal" });
-      return;
-    }
-
-    let verifierResult;
-    try {
-      verifierResult = await verifyClaim(claim.claim, search.results);
-    } catch (err) {
-      console.error("[verify-claim] haiku error", err);
-      res.status(500).json({ error: "internal" });
-      return;
-    }
-
-    const latency_ms = Date.now() - start;
-
-    if (!verifierResult.ok) {
-      console.error("[verify-claim] verifier parse_error");
-      res.status(500).json({ error: "internal" });
-      return;
-    }
-
-    const { result, usage } = verifierResult;
+    const { result, usage } = verifier;
 
     const { data: insertRow, error: insertError } = await supabaseService
       .from("claim_verifications")
@@ -109,9 +94,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         claim_index: body.claim_index,
         user_id: user.user_id,
         verdict: result.verdict,
-        evidence_summary: result.evidence_summary,
+        evidence_summary: result.evidence,
         source_urls: result.source_urls,
-        search_tokens_used: search.results.length,
+        as_of_date: result.as_of_date,
+        was_true_until: result.was_true_until ?? null,
         haiku_tokens_in: usage.tokens_in,
         haiku_tokens_out: usage.tokens_out,
         latency_ms
@@ -125,17 +111,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    res.status(200).json({
+    const responsePayload: Record<string, unknown> = {
       verdict: result.verdict,
-      // v25+ alias — new extension reads `evidence`, old extension reads
-      // `evidence_summary`. Both populated with the same value.
-      evidence: result.evidence_summary,
-      evidence_summary: result.evidence_summary,
+      evidence: result.evidence,
       source_urls: result.source_urls,
+      as_of_date: result.as_of_date,
       verification_id: insertRow.id as string,
-      search_query: search.search_query,
       follow_up_prompt: result.follow_up_prompt
-    });
+    };
+    if (result.was_true_until !== undefined) {
+      responsePayload.was_true_until = result.was_true_until;
+    }
+    res.status(200).json(responsePayload);
   } catch (err) {
     console.error("[verify-claim] unhandled", err);
     res.status(500).json({ error: "internal" });
