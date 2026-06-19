@@ -57,20 +57,32 @@ Otherwise:
   ]
 }`;
 
+// Zero-width-space injection on the three closing tags this builder uses.
+// Prevents user-controlled content (AI response, original prompt, history
+// turns) from escaping its data block by including a literal terminator.
+function neutralizeTerminators(text: string): string {
+  return text
+    .replace(/<\/response>/gi, "<\u200B/response>")
+    .replace(/<\/prompt>/gi, "<\u200B/prompt>")
+    .replace(/<\/history>/gi, "<\u200B/history>");
+}
+
 export function buildFactCheckUserMessage(
   userPrompt: string,
   aiResponse: string,
   conversationHistory?: ReadonlyArray<{ role: "user" | "assistant"; content: string }>
 ): string {
   const history = conversationHistory && conversationHistory.length > 0
-    ? `<history>\n${conversationHistory.map((t) => `${t.role}: ${t.content}`).join("\n")}\n</history>\n\n`
+    ? `<history>\n${conversationHistory
+        .map((t) => `${t.role}: ${neutralizeTerminators(t.content)}`)
+        .join("\n")}\n</history>\n\n`
     : "";
   return `${history}<prompt>
-${userPrompt}
+${neutralizeTerminators(userPrompt)}
 </prompt>
 
 <response>
-${aiResponse}
+${neutralizeTerminators(aiResponse)}
 </response>
 
 Extract falsifiable claims and return JSON.`;

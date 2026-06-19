@@ -91,6 +91,10 @@ export function buildFactCheckVerifierPrompt(claimType: ClaimType): string {
       return SHARED_HEADER + STATISTIC_FRAMING;
     case "factual":
       return SHARED_HEADER + FACTUAL_FRAMING;
+    default: {
+      const _exhaustive: never = claimType;
+      throw new Error(`Unhandled claim type: ${String(_exhaustive)}`);
+    }
   }
 }
 

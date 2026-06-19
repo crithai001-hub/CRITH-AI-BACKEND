@@ -15,7 +15,9 @@ describe("buildFactCheckVerifierPrompt", () => {
   it("includes the factual framing for factual claims", () => {
     expect(buildFactCheckVerifierPrompt("factual")).toContain("GENERIC FACT CHECK");
   });
-  it("always includes the recency rule", () => {
-    expect(buildFactCheckVerifierPrompt("citation")).toContain("Recency matters");
+  it("includes the recency rule for every claim type", () => {
+    for (const t of ["citation", "quote", "statistic", "factual"] as const) {
+      expect(buildFactCheckVerifierPrompt(t)).toContain("Recency matters");
+    }
   });
 });

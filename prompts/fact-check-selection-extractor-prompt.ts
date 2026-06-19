@@ -34,7 +34,7 @@ At most 3 claims.
 
 # Output
 
-Return ONLY a JSON object — no preamble.
+Return ONLY a JSON object — no preamble, no markdown fences.
 
 If no falsifiable claims:
 {"skip": true, "claims": []}
