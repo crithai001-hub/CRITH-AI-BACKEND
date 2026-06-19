@@ -78,15 +78,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    // Quota counts only on a successful verifier call.
-    const quota = await incrementVerificationQuota(user.user_id);
-    if (quota.exceeded) {
-      res.status(429).json({ error: "quota_exceeded", limit: quota.limit, used: quota.used });
-      return;
-    }
-
     const { result, usage } = verifier;
 
+    // Persist BEFORE charging quota. DB-insert failures are our infra problem;
+    // the user should not be billed for a verification that does not yield a
+    // persisted row they can later reference.
     const { data: insertRow, error: insertError } = await supabaseService
       .from("claim_verifications")
       .insert({
@@ -98,8 +94,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         source_urls: result.source_urls,
         as_of_date: result.as_of_date,
         was_true_until: result.was_true_until ?? null,
-        haiku_tokens_in: usage.tokens_in,
-        haiku_tokens_out: usage.tokens_out,
+        follow_up_prompt: result.follow_up_prompt,
+        gemini_tokens_in: usage.tokens_in,
+        gemini_tokens_out: usage.tokens_out,
         latency_ms
       })
       .select("id")
@@ -108,6 +105,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     if (insertError || !insertRow) {
       console.error("[verify-claim] insert failed", insertError);
       res.status(500).json({ error: "internal" });
+      return;
+    }
+
+    // Quota counts only on a fully-persisted verification.
+    const quota = await incrementVerificationQuota(user.user_id);
+    if (quota.exceeded) {
+      res.status(429).json({ error: "quota_exceeded", limit: quota.limit, used: quota.used });
       return;
     }
 
