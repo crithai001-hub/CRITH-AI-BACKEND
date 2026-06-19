@@ -107,6 +107,7 @@ function buildClaims(
     claim_text: string;
     anchored_to: string;
     claim_type: Claim["claim_type"];
+    claim_subtype: Claim["claim_subtype"];
     why_check: string;
   }>,
   analysisId: string
@@ -118,6 +119,7 @@ function buildClaims(
     claim_text: c.claim_text,
     anchored_to: c.anchored_to,
     claim_type: c.claim_type,
+    claim_subtype: c.claim_subtype,
     why_check: c.why_check
   }));
 }

@@ -1,23 +1,47 @@
 // tests/fact-check-verifier-prompt.test.ts
 import { describe, expect, it } from "vitest";
-import { buildFactCheckVerifierPrompt } from "../prompts/fact-check-verifier-prompt.js";
+import {
+  FACT_CHECK_VERIFIER_PROMPT,
+  buildFactCheckVerifierUserMessage
+} from "../prompts/fact-check-verifier-prompt.js";
 
-describe("buildFactCheckVerifierPrompt", () => {
-  it("includes the citation framing for citation claims", () => {
-    expect(buildFactCheckVerifierPrompt("citation")).toContain("EXISTENCE CHECK");
+describe("FACT_CHECK_VERIFIER_PROMPT", () => {
+  it("uses the evidence-state verdict enum", () => {
+    expect(FACT_CHECK_VERIFIER_PROMPT).toContain('"supported"');
+    expect(FACT_CHECK_VERIFIER_PROMPT).toContain('"contradicted"');
+    expect(FACT_CHECK_VERIFIER_PROMPT).toContain('"unverified"');
   });
-  it("includes the quote framing for quote claims", () => {
-    expect(buildFactCheckVerifierPrompt("quote")).toContain("ATTRIBUTION CHECK");
+  it("instructs the model on prescriptive substrate handling", () => {
+    expect(FACT_CHECK_VERIFIER_PROMPT).toContain("prescriptive");
+    expect(FACT_CHECK_VERIFIER_PROMPT).toContain("NEVER judge whether the recommendation");
   });
-  it("includes the statistic framing for statistic claims", () => {
-    expect(buildFactCheckVerifierPrompt("statistic")).toContain("VALUE CHECK");
+  it("instructs the model to default to unverified", () => {
+    expect(FACT_CHECK_VERIFIER_PROMPT).toContain("Default here when unsure");
   });
-  it("includes the factual framing for factual claims", () => {
-    expect(buildFactCheckVerifierPrompt("factual")).toContain("GENERIC FACT CHECK");
+});
+
+describe("buildFactCheckVerifierUserMessage", () => {
+  it("injects today, claim_type, claim_subtype, and why_check", () => {
+    const out = buildFactCheckVerifierUserMessage({
+      claim_text: "Sam Altman is the CEO of OpenAI",
+      claim_type: "factual",
+      claim_subtype: "entity",
+      why_check: "Leadership roles change.",
+      today: "2026-06-19"
+    });
+    expect(out).toContain("Today's date: 2026-06-19");
+    expect(out).toContain("Sam Altman is the CEO of OpenAI");
+    expect(out).toContain("claim_type: factual");
+    expect(out).toContain("claim_subtype: entity");
+    expect(out).toContain("Leadership roles change.");
   });
-  it("includes the recency rule for every claim type", () => {
-    for (const t of ["citation", "quote", "statistic", "factual"] as const) {
-      expect(buildFactCheckVerifierPrompt(t)).toContain("Recency matters");
-    }
+  it("falls back to n/a when why_check is missing", () => {
+    const out = buildFactCheckVerifierUserMessage({
+      claim_text: "x",
+      claim_type: "factual",
+      claim_subtype: "general",
+      today: "2026-06-19"
+    });
+    expect(out).toContain("(n/a)");
   });
 });

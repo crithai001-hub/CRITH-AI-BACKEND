@@ -68,7 +68,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     }
 
     const start = Date.now();
-    const verifier = await factCheckVerify(claim.claim_text, claim.claim_type);
+    const verifier = await factCheckVerify({
+      claim_text: claim.claim_text,
+      claim_type: claim.claim_type,
+      claim_subtype: claim.claim_subtype,
+      why_check: claim.why_check
+    });
     const latency_ms = Date.now() - start;
 
     if (!verifier.ok) {
@@ -94,7 +99,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         source_urls: result.source_urls,
         as_of_date: result.as_of_date,
         was_true_until: result.was_true_until ?? null,
-        follow_up_prompt: result.follow_up_prompt,
+        follow_up_prompt: result.follow_up_prompt ?? null,
+        claim_subtype: claim.claim_subtype,
         gemini_tokens_in: usage.tokens_in,
         gemini_tokens_out: usage.tokens_out,
         latency_ms
@@ -120,11 +126,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       evidence: result.evidence,
       source_urls: result.source_urls,
       as_of_date: result.as_of_date,
-      verification_id: insertRow.id as string,
-      follow_up_prompt: result.follow_up_prompt
+      verification_id: insertRow.id as string
     };
     if (result.was_true_until !== undefined) {
       responsePayload.was_true_until = result.was_true_until;
+    }
+    if (result.follow_up_prompt !== undefined) {
+      responsePayload.follow_up_prompt = result.follow_up_prompt;
     }
     res.status(200).json(responsePayload);
   } catch (err) {

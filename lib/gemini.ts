@@ -9,10 +9,11 @@ import {
   buildFactCheckSelectionUserMessage
 } from "../prompts/fact-check-selection-extractor-prompt.js";
 import {
-  buildFactCheckVerifierPrompt,
+  FACT_CHECK_VERIFIER_PROMPT,
   buildFactCheckVerifierUserMessage
 } from "../prompts/fact-check-verifier-prompt.js";
 import type {
+  ClaimSubtype,
   ClaimType,
   ConversationTurn,
   ExtractorResult,
@@ -23,11 +24,13 @@ import type {
 } from "../types/index.js";
 
 const MAX_CLAIMS = 3;
-const VALID_CLAIM_TYPES = new Set<ClaimType>([
+const VALID_CLAIM_TYPES = new Set<ClaimType>(["factual", "prescriptive"]);
+const VALID_CLAIM_SUBTYPES = new Set<ClaimSubtype>([
   "citation",
-  "quote",
   "statistic",
-  "factual"
+  "quote",
+  "entity",
+  "general"
 ]);
 
 // Extract the first balanced { ... } JSON block from a possibly-noisy LLM
@@ -79,26 +82,28 @@ export function parseExtractorResponse(
   if (!parsed || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;
 
-  if (typeof obj.skip !== "boolean") return null;
-  if (!Array.isArray(obj.claims)) return null;
-
-  if (obj.skip) {
-    return { skip: true, claims: [] };
-  }
+  // skip is optional in the new prompt — a missing/false `skip` with an empty
+  // claims array is equivalent to {skip: true, claims: []}. Treat that case as
+  // a normal extracted_nothing outcome rather than a parse error.
+  const claimsArray = Array.isArray(obj.claims) ? obj.claims : null;
+  if (claimsArray === null) return null;
+  if (obj.skip === true) return { skip: true, claims: [] };
 
   const claims: RawExtractedClaim[] = [];
-  for (const raw of obj.claims.slice(0, MAX_CLAIMS)) {
+  for (const raw of claimsArray.slice(0, MAX_CLAIMS)) {
     if (!raw || typeof raw !== "object") continue;
     const c = raw as Record<string, unknown>;
     if (
       typeof c.claim_text !== "string" ||
       typeof c.anchored_to !== "string" ||
       typeof c.claim_type !== "string" ||
+      typeof c.claim_subtype !== "string" ||
       typeof c.why_check !== "string"
     ) {
       continue;
     }
     if (!VALID_CLAIM_TYPES.has(c.claim_type as ClaimType)) continue;
+    if (!VALID_CLAIM_SUBTYPES.has(c.claim_subtype as ClaimSubtype)) continue;
     if (c.claim_text.length === 0 || c.claim_text.length > 400) continue;
     if (c.why_check.length === 0 || c.why_check.length > 200) continue;
 
@@ -112,6 +117,7 @@ export function parseExtractorResponse(
       claim_text: c.claim_text,
       anchored_to: recovered,
       claim_type: c.claim_type as ClaimType,
+      claim_subtype: c.claim_subtype as ClaimSubtype,
       why_check: c.why_check
     });
   }
@@ -120,21 +126,33 @@ export function parseExtractorResponse(
 }
 
 const VALID_VERDICTS = new Set<Verdict>([
-  "found_supporting",
-  "found_contradicting",
-  "could_not_verify",
+  "supported",
+  "contradicted",
+  "unverified",
   "error"
 ]);
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const YEAR_MONTH_RE = /^\d{4}-\d{2}$/;
 
-// Regex catches the shape; Date round-trip catches "2026-00-00" and similar
-// out-of-range values that pass the regex but are not real calendar dates.
+// Date regexes catch shape; Date round-trip catches "2026-00-00" / "2026-13"
+// and similar out-of-range values that pass the regex but are not real
+// calendar dates / months.
 function isValidIsoDate(s: string): boolean {
   if (!ISO_DATE_RE.test(s)) return false;
   const d = new Date(s + "T00:00:00Z");
   if (Number.isNaN(d.getTime())) return false;
   return d.toISOString().slice(0, 10) === s;
+}
+
+function isValidYearMonth(s: string): boolean {
+  if (!YEAR_MONTH_RE.test(s)) return false;
+  const month = parseInt(s.slice(5, 7), 10);
+  return month >= 1 && month <= 12;
+}
+
+function isValidWasTrueUntil(s: string): boolean {
+  return isValidIsoDate(s) || isValidYearMonth(s);
 }
 
 export function parseVerifierResponse(rawText: string): VerifierResult | null {
@@ -153,38 +171,54 @@ export function parseVerifierResponse(rawText: string): VerifierResult | null {
   if (typeof obj.verdict !== "string" || !VALID_VERDICTS.has(obj.verdict as Verdict)) {
     return null;
   }
+  const verdict = obj.verdict as Verdict;
+
   if (typeof obj.evidence !== "string") return null;
   if (!Array.isArray(obj.source_urls)) return null;
   if (typeof obj.as_of_date !== "string" || !isValidIsoDate(obj.as_of_date)) return null;
 
-  // Normalize null and absent to undefined so the wire shape (optional) and the
-  // internal shape (optional) match. Invalid string formats still hard-fail.
+  // was_true_until: accept YYYY-MM (preferred per prompt) or YYYY-MM-DD.
+  // null and absent both normalize to undefined; invalid strings hard-fail.
   let was_true_until: string | undefined;
   if (obj.was_true_until === undefined || obj.was_true_until === null) {
     was_true_until = undefined;
-  } else if (typeof obj.was_true_until === "string" && isValidIsoDate(obj.was_true_until)) {
+  } else if (
+    typeof obj.was_true_until === "string" &&
+    isValidWasTrueUntil(obj.was_true_until)
+  ) {
     was_true_until = obj.was_true_until;
   } else {
     return null;
   }
 
-  if (typeof obj.follow_up_prompt !== "string") return null;
-  const follow_up = obj.follow_up_prompt.trim();
-  if (follow_up.length === 0) return null;
-  const capped_follow_up = follow_up.length > 450 ? follow_up.slice(0, 450) : follow_up;
+  // follow_up_prompt is null when verdict === "supported". null and absent
+  // both normalize to undefined. Non-empty strings are trimmed and capped.
+  let follow_up_prompt: string | undefined;
+  if (obj.follow_up_prompt === undefined || obj.follow_up_prompt === null) {
+    follow_up_prompt = undefined;
+  } else if (typeof obj.follow_up_prompt === "string") {
+    const trimmed = obj.follow_up_prompt.trim();
+    if (trimmed.length === 0) {
+      follow_up_prompt = undefined;
+    } else {
+      follow_up_prompt = trimmed.length > 450 ? trimmed.slice(0, 450) : trimmed;
+    }
+  } else {
+    return null;
+  }
 
   const source_urls = obj.source_urls.filter(
     (u): u is string => typeof u === "string" && u.length > 0
   );
 
   const result: VerifierResult = {
-    verdict: obj.verdict as Verdict,
+    verdict,
     evidence: obj.evidence,
     source_urls,
-    as_of_date: obj.as_of_date,
-    follow_up_prompt: capped_follow_up
+    as_of_date: obj.as_of_date
   };
   if (was_true_until !== undefined) result.was_true_until = was_true_until;
+  if (follow_up_prompt !== undefined) result.follow_up_prompt = follow_up_prompt;
   return result;
 }
 
@@ -192,7 +226,8 @@ export function parseVerifierResponse(rawText: string): VerifierResult | null {
 
 const GEMINI_ENDPOINT =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
-const TIMEOUT_MS = 15000;
+const EXTRACT_TIMEOUT_MS = 15000;
+const VERIFY_TIMEOUT_MS = 30000; // grounded search needs more headroom
 
 interface GeminiResponse {
   candidates?: Array<{
@@ -220,18 +255,19 @@ type GeminiCallResult = GeminiCallSuccess | GeminiCallFailure;
 async function callGemini(
   system: string,
   userMessage: string,
-  withSearch: boolean
+  withSearch: boolean,
+  timeoutMs: number
 ): Promise<GeminiCallResult> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return { ok: false, reason: "no_api_key" };
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   const body: Record<string, unknown> = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts: [{ text: userMessage }] }],
-    generationConfig: { temperature: 0.1, maxOutputTokens: 1024 }
+    generationConfig: { temperature: 0.1, maxOutputTokens: withSearch ? 2048 : 1024 }
   };
   if (withSearch) {
     body.tools = [{ google_search: {} }];
@@ -294,7 +330,7 @@ export async function factCheckExtract(
   conversationHistory?: ReadonlyArray<ConversationTurn>
 ): Promise<ExtractorCallResult> {
   const userMessage = buildFactCheckUserMessage(userPrompt, aiResponse, conversationHistory);
-  const call = await callGemini(FACT_CHECK_EXTRACTOR_PROMPT, userMessage, false);
+  const call = await callGemini(FACT_CHECK_EXTRACTOR_PROMPT, userMessage, false, EXTRACT_TIMEOUT_MS);
   if (!call.ok) {
     return { ok: false, reason: "gemini_error", usage: { tokens_in: 0, tokens_out: 0 } };
   }
@@ -315,7 +351,12 @@ export async function factCheckSelectionExtract(
     contextAfter,
     originatingPrompt
   );
-  const call = await callGemini(FACT_CHECK_SELECTION_EXTRACTOR_PROMPT, userMessage, false);
+  const call = await callGemini(
+    FACT_CHECK_SELECTION_EXTRACTOR_PROMPT,
+    userMessage,
+    false,
+    EXTRACT_TIMEOUT_MS
+  );
   if (!call.ok) {
     return { ok: false, reason: "gemini_error", usage: { tokens_in: 0, tokens_out: 0 } };
   }
@@ -336,13 +377,27 @@ export interface VerifierCallFailure {
 }
 export type VerifierCallResult = VerifierCallSuccess | VerifierCallFailure;
 
-export async function factCheckVerify(
-  claim: string,
-  claimType: ClaimType
-): Promise<VerifierCallResult> {
-  const system = buildFactCheckVerifierPrompt(claimType);
-  const userMessage = buildFactCheckVerifierUserMessage(claim);
-  const call = await callGemini(system, userMessage, true);
+export interface FactCheckVerifyInput {
+  claim_text: string;
+  claim_type: ClaimType;
+  claim_subtype: ClaimSubtype;
+  why_check?: string;
+  today?: string; // YYYY-MM-DD; defaults to today (UTC)
+}
+
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+export async function factCheckVerify(input: FactCheckVerifyInput): Promise<VerifierCallResult> {
+  const userMessage = buildFactCheckVerifierUserMessage({
+    claim_text: input.claim_text,
+    claim_type: input.claim_type,
+    claim_subtype: input.claim_subtype,
+    why_check: input.why_check,
+    today: input.today ?? todayUtc()
+  });
+  const call = await callGemini(FACT_CHECK_VERIFIER_PROMPT, userMessage, true, VERIFY_TIMEOUT_MS);
   if (!call.ok) {
     return { ok: false, reason: "gemini_error", usage: { tokens_in: 0, tokens_out: 0 } };
   }

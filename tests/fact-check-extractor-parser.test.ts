@@ -5,6 +5,14 @@ import { parseExtractorResponse } from "../lib/gemini.js";
 const RESPONSE_TEXT =
   "Sam Altman is the CEO of OpenAI. According to a 2023 McKinsey study, 73% of enterprise AI projects fail.";
 
+const wellFormed = {
+  claim_text: "Sam Altman is the CEO of OpenAI",
+  anchored_to: "Sam Altman is the CEO of OpenAI",
+  claim_type: "factual",
+  claim_subtype: "entity",
+  why_check: "Leadership roles change since AI training cutoff."
+};
+
 describe("parseExtractorResponse", () => {
   it("parses skip:true with empty claims", () => {
     const json = JSON.stringify({ skip: true, claims: [] });
@@ -14,77 +22,85 @@ describe("parseExtractorResponse", () => {
     });
   });
 
-  it("parses a well-formed claim", () => {
+  it("parses a well-formed factual claim", () => {
+    const json = JSON.stringify({ skip: false, claims: [wellFormed] });
+    expect(parseExtractorResponse(json, RESPONSE_TEXT)).toEqual({
+      skip: false,
+      claims: [wellFormed]
+    });
+  });
+
+  it("parses a prescriptive claim with a citation subtype", () => {
     const json = JSON.stringify({
       skip: false,
       claims: [
         {
-          claim_text: "Sam Altman is the CEO of OpenAI",
-          anchored_to: "Sam Altman is the CEO of OpenAI",
-          claim_type: "factual",
-          why_check: "Leadership roles change since AI training cutoff."
+          claim_text: "73% of enterprise AI projects fail in the first year",
+          anchored_to: "73% of enterprise AI projects fail",
+          claim_type: "prescriptive",
+          claim_subtype: "citation",
+          why_check: "Cited as a 2023 McKinsey study; may not exist."
         }
       ]
     });
     const out = parseExtractorResponse(json, RESPONSE_TEXT);
-    expect(out).toEqual({
-      skip: false,
-      claims: [
-        {
-          claim_text: "Sam Altman is the CEO of OpenAI",
-          anchored_to: "Sam Altman is the CEO of OpenAI",
-          claim_type: "factual",
-          why_check: "Leadership roles change since AI training cutoff."
-        }
-      ]
-    });
+    expect(out!.claims).toHaveLength(1);
+    expect(out!.claims[0]!.claim_type).toBe("prescriptive");
+    expect(out!.claims[0]!.claim_subtype).toBe("citation");
   });
 
-  it("drops claims whose anchor is not in the response", () => {
+  it("drops claims whose anchor is not in the source", () => {
     const json = JSON.stringify({
       skip: false,
       claims: [
         {
-          claim_text: "Made up claim",
+          claim_text: "Made up",
           anchored_to: "this exact phrase is not in the response",
           claim_type: "factual",
+          claim_subtype: "general",
           why_check: "fabricated"
         }
       ]
     });
-    const out = parseExtractorResponse(json, RESPONSE_TEXT);
-    expect(out!.claims).toEqual([]);
+    expect(parseExtractorResponse(json, RESPONSE_TEXT)!.claims).toEqual([]);
   });
 
   it("rejects unknown claim_type", () => {
     const json = JSON.stringify({
       skip: false,
-      claims: [
-        {
-          claim_text: "x",
-          anchored_to: "Sam Altman is the CEO of OpenAI",
-          claim_type: "what",
-          why_check: "x"
-        }
-      ]
+      claims: [{ ...wellFormed, claim_type: "what" }]
     });
-    const out = parseExtractorResponse(json, RESPONSE_TEXT);
-    expect(out!.claims).toEqual([]);
+    expect(parseExtractorResponse(json, RESPONSE_TEXT)!.claims).toEqual([]);
+  });
+
+  it("rejects unknown claim_subtype", () => {
+    const json = JSON.stringify({
+      skip: false,
+      claims: [{ ...wellFormed, claim_subtype: "trivia" }]
+    });
+    expect(parseExtractorResponse(json, RESPONSE_TEXT)!.claims).toEqual([]);
+  });
+
+  it("rejects a claim missing claim_subtype", () => {
+    const { claim_subtype: _, ...withoutSubtype } = wellFormed;
+    const json = JSON.stringify({ skip: false, claims: [withoutSubtype] });
+    expect(parseExtractorResponse(json, RESPONSE_TEXT)!.claims).toEqual([]);
   });
 
   it("caps claims at 3", () => {
-    const claim = {
-      claim_text: "x",
-      anchored_to: "Sam Altman is the CEO of OpenAI",
-      claim_type: "factual",
-      why_check: "x"
-    };
     const json = JSON.stringify({
       skip: false,
-      claims: [claim, claim, claim, claim, claim]
+      claims: [wellFormed, wellFormed, wellFormed, wellFormed, wellFormed]
     });
-    const out = parseExtractorResponse(json, RESPONSE_TEXT);
-    expect(out!.claims).toHaveLength(3);
+    expect(parseExtractorResponse(json, RESPONSE_TEXT)!.claims).toHaveLength(3);
+  });
+
+  it("treats missing skip with empty claims as extracted_nothing", () => {
+    const json = JSON.stringify({ claims: [] });
+    expect(parseExtractorResponse(json, RESPONSE_TEXT)).toEqual({
+      skip: false,
+      claims: []
+    });
   });
 
   it("returns null on malformed JSON", () => {

@@ -3,41 +3,65 @@ import { describe, expect, it } from "vitest";
 import { parseVerifierResponse } from "../lib/gemini.js";
 
 describe("parseVerifierResponse", () => {
-  it("parses a well-formed found_supporting verdict", () => {
+  it("parses a well-formed supported verdict with null follow_up_prompt", () => {
     const json = JSON.stringify({
-      verdict: "found_supporting",
+      verdict: "supported",
       evidence: "Two recent sources confirm.",
       source_urls: ["https://a.com", "https://b.com"],
       as_of_date: "2026-06-19",
       was_true_until: null,
-      follow_up_prompt: "Earlier you said X — can you share the primary source?"
+      follow_up_prompt: null
     });
     expect(parseVerifierResponse(json)).toEqual({
-      verdict: "found_supporting",
+      verdict: "supported",
       evidence: "Two recent sources confirm.",
       source_urls: ["https://a.com", "https://b.com"],
-      as_of_date: "2026-06-19",
-      follow_up_prompt: "Earlier you said X — can you share the primary source?"
+      as_of_date: "2026-06-19"
     });
   });
 
-  it("parses a found_contradicting verdict with was_true_until", () => {
+  it("parses a contradicted verdict with YYYY-MM was_true_until", () => {
     const json = JSON.stringify({
-      verdict: "found_contradicting",
+      verdict: "contradicted",
       evidence: "Was correct ~2015 but social media now dominates.",
       source_urls: ["https://x.com"],
       as_of_date: "2026-06-19",
-      was_true_until: "2018-12-31",
+      was_true_until: "2018-12",
       follow_up_prompt: "You said door-to-door is best — that's outdated; can you update?"
     });
     const out = parseVerifierResponse(json);
-    expect(out!.verdict).toBe("found_contradicting");
-    expect(out!.was_true_until).toBe("2018-12-31");
+    expect(out!.verdict).toBe("contradicted");
+    expect(out!.was_true_until).toBe("2018-12");
+    expect(out!.follow_up_prompt).toContain("outdated");
+  });
+
+  it("accepts YYYY-MM-DD was_true_until as well", () => {
+    const json = JSON.stringify({
+      verdict: "contradicted",
+      evidence: "x",
+      source_urls: [],
+      as_of_date: "2026-06-19",
+      was_true_until: "2018-12-31",
+      follow_up_prompt: "x"
+    });
+    expect(parseVerifierResponse(json)!.was_true_until).toBe("2018-12-31");
+  });
+
+  it("rejects an out-of-range YYYY-MM was_true_until", () => {
+    const json = JSON.stringify({
+      verdict: "contradicted",
+      evidence: "x",
+      source_urls: [],
+      as_of_date: "2026-06-19",
+      was_true_until: "2020-13",
+      follow_up_prompt: "x"
+    });
+    expect(parseVerifierResponse(json)).toBeNull();
   });
 
   it("filters non-string source_urls", () => {
     const json = JSON.stringify({
-      verdict: "could_not_verify",
+      verdict: "unverified",
       evidence: "x",
       source_urls: ["https://a.com", 42, null, "https://b.com"],
       as_of_date: "2026-06-19",
@@ -64,7 +88,7 @@ describe("parseVerifierResponse", () => {
 
   it("rejects bad as_of_date format", () => {
     const json = JSON.stringify({
-      verdict: "could_not_verify",
+      verdict: "unverified",
       evidence: "x",
       source_urls: [],
       as_of_date: "yesterday",
@@ -74,44 +98,30 @@ describe("parseVerifierResponse", () => {
     expect(parseVerifierResponse(json)).toBeNull();
   });
 
-  it("treats missing was_true_until as undefined", () => {
+  it("treats missing follow_up_prompt as undefined", () => {
     const json = JSON.stringify({
-      verdict: "found_supporting",
+      verdict: "supported",
       evidence: "x",
       source_urls: ["https://a.com"],
-      as_of_date: "2026-06-19",
-      follow_up_prompt: "x"
+      as_of_date: "2026-06-19"
     });
-    expect(parseVerifierResponse(json)!.was_true_until).toBeUndefined();
+    expect(parseVerifierResponse(json)!.follow_up_prompt).toBeUndefined();
   });
 
-  it("treats explicit null was_true_until as undefined", () => {
+  it("treats empty follow_up_prompt as undefined", () => {
     const json = JSON.stringify({
-      verdict: "found_supporting",
+      verdict: "supported",
       evidence: "x",
-      source_urls: ["https://a.com"],
+      source_urls: [],
       as_of_date: "2026-06-19",
-      was_true_until: null,
-      follow_up_prompt: "x"
+      follow_up_prompt: "   "
     });
-    expect(parseVerifierResponse(json)!.was_true_until).toBeUndefined();
-  });
-
-  it("rejects bad was_true_until format", () => {
-    const json = JSON.stringify({
-      verdict: "found_contradicting",
-      evidence: "x",
-      source_urls: ["https://a.com"],
-      as_of_date: "2026-06-19",
-      was_true_until: "circa 2020",
-      follow_up_prompt: "x"
-    });
-    expect(parseVerifierResponse(json)).toBeNull();
+    expect(parseVerifierResponse(json)!.follow_up_prompt).toBeUndefined();
   });
 
   it("truncates follow_up_prompt over 450 chars", () => {
     const json = JSON.stringify({
-      verdict: "could_not_verify",
+      verdict: "unverified",
       evidence: "x",
       source_urls: [],
       as_of_date: "2026-06-19",
@@ -127,12 +137,12 @@ describe("parseVerifierResponse", () => {
 
   it("rejects out-of-range as_of_date that passes the regex", () => {
     const json = JSON.stringify({
-      verdict: "found_supporting",
+      verdict: "supported",
       evidence: "x",
       source_urls: [],
       as_of_date: "2026-00-00",
       was_true_until: null,
-      follow_up_prompt: "x"
+      follow_up_prompt: null
     });
     expect(parseVerifierResponse(json)).toBeNull();
   });

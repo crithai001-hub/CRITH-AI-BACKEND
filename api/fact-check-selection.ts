@@ -216,6 +216,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       claim_text: c.claim_text,
       anchored_to: c.anchored_to,
       claim_type: c.claim_type,
+      claim_subtype: c.claim_subtype,
       why_check: c.why_check
     }));
 
