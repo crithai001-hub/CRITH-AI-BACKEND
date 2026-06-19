@@ -49,4 +49,11 @@ describe("evaluateFactCheckGate", () => {
       reason: "code"
     });
   });
+
+  it("hasContext=true does not bypass factual_lookup", () => {
+    expect(evaluateFactCheckGate("what is 2+2?", "tiny", true)).toEqual({
+      skip: true,
+      reason: "factual_lookup"
+    });
+  });
 });
