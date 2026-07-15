@@ -3,16 +3,19 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { applyCors, handlePreflight } from "../lib/cors.js";
 import { getUserFromRequest } from "../lib/auth.js";
 import { evaluateFactCheckGate } from "../lib/fact-check-gate.js";
-import { factCheckExtract } from "../lib/gemini.js";
+import { factCheckCombined } from "../lib/gemini.js";
 import { supabaseService } from "../lib/supabase.js";
 import { validateConversationHistory } from "../lib/validate-history.js";
-import { FACT_CHECK_EXTRACTOR_VERSION } from "../prompts/fact-check-extractor-prompt.js";
+import { FACT_CHECK_COMBINED_VERSION } from "../prompts/fact-check-combined-prompt.js";
 import type {
   Claim,
+  ClaimVerificationPayload,
   ConversationTurn,
   FactCheckRequestBody,
   Platform,
-  SkipReason
+  RawVerifiedClaim,
+  SkipReason,
+  VerifiedClaim
 } from "../types/index.js";
 
 const VALID_PLATFORMS: ReadonlySet<Platform> = new Set([
@@ -85,7 +88,7 @@ async function insertFactCheckRow(input: InsertRowInput): Promise<string | null>
       tokens_out: input.tokens_out,
       cached_tokens: 0,
       latency_ms: input.latency_ms,
-      prompt_version: FACT_CHECK_EXTRACTOR_VERSION,
+      prompt_version: FACT_CHECK_COMBINED_VERSION,
       verifiable_claims: input.claims,
       original_prompt: input.body.prompt,
       original_response: input.body.response,
@@ -102,26 +105,71 @@ async function insertFactCheckRow(input: InsertRowInput): Promise<string | null>
   return (data?.id as string) ?? null;
 }
 
-function buildClaims(
-  raw: ReadonlyArray<{
-    claim_text: string;
-    anchored_to: string;
-    claim_type: Claim["claim_type"];
-    claim_subtype: Claim["claim_subtype"];
-    why_check: string;
-  }>,
-  analysisId: string
-): Claim[] {
-  return raw.map((c, idx) => ({
-    claim_id: `${analysisId}:${idx}`,
-    claim_index: idx,
-    analysis_id: analysisId,
-    claim_text: c.claim_text,
-    anchored_to: c.anchored_to,
-    claim_type: c.claim_type,
-    claim_subtype: c.claim_subtype,
-    why_check: c.why_check
-  }));
+// Enriches raw verified claims with ids and persists one claim_verifications
+// row per claim (trigger='auto'). Persistence failure never blocks the
+// response: the user still gets the verdict; verification_id is just absent.
+export async function persistVerifiedClaims(
+  raw: ReadonlyArray<RawVerifiedClaim>,
+  analysisId: string,
+  userId: string,
+  latencyMs: number
+): Promise<VerifiedClaim[]> {
+  const out: VerifiedClaim[] = [];
+  let idx = 0;
+  for (const c of raw) {
+    const verification: ClaimVerificationPayload = {
+      verdict: c.verification.verdict,
+      evidence: c.verification.evidence,
+      source_urls: c.verification.source_urls,
+      as_of_date: c.verification.as_of_date
+    };
+    if (c.verification.was_true_until !== undefined) {
+      verification.was_true_until = c.verification.was_true_until;
+    }
+    if (c.verification.follow_up_prompt !== undefined) {
+      verification.follow_up_prompt = c.verification.follow_up_prompt;
+    }
+
+    const { data, error } = await supabaseService
+      .from("claim_verifications")
+      .insert({
+        analysis_id: analysisId,
+        claim_index: idx,
+        user_id: userId,
+        verdict: c.verification.verdict,
+        evidence_summary: c.verification.evidence,
+        source_urls: c.verification.source_urls,
+        as_of_date: c.verification.as_of_date,
+        was_true_until: c.verification.was_true_until ?? null,
+        follow_up_prompt: c.verification.follow_up_prompt ?? null,
+        claim_subtype: c.claim_subtype,
+        trigger: "auto",
+        gemini_tokens_in: 0, // token usage is per-call, recorded on response_analyses
+        gemini_tokens_out: 0,
+        latency_ms: latencyMs
+      })
+      .select("id")
+      .single();
+    if (error || !data) {
+      console.error("[fact-check] verification insert failed", { idx, error });
+    } else {
+      verification.verification_id = data.id as string;
+    }
+
+    out.push({
+      claim_id: `${analysisId}:${idx}`,
+      claim_index: idx,
+      analysis_id: analysisId,
+      claim_text: c.claim_text,
+      anchored_to: c.anchored_to,
+      claim_type: c.claim_type,
+      claim_subtype: c.claim_subtype,
+      why_check: c.why_check,
+      verification
+    });
+    idx++;
+  }
+  return out;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
@@ -168,7 +216,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     }
 
     const start = Date.now();
-    const result = await factCheckExtract(
+    const result = await factCheckCombined(
       body.prompt,
       body.response,
       cappedHistory.cleaned as ReadonlyArray<ConversationTurn>
@@ -177,7 +225,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
     if (!result.ok) {
       const reason: SkipReason = result.reason === "parse_error" ? "parse_error" : "gemini_error";
-      console.error("[fact-check] extractor failed", { reason });
+      console.error("[fact-check] combined check failed", { reason });
       const analysisId = await insertFactCheckRow({
         user_id: user.user_id,
         body,
@@ -190,7 +238,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         history_turn_count: cappedHistory.turn_count,
         history_chars: cappedHistory.char_count
       });
-      // Extraction errors do NOT cost the user quota.
       res.status(200).json({ skip: true, reason, analysis_id: analysisId ?? "" });
       return;
     }
@@ -208,17 +255,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         history_turn_count: cappedHistory.turn_count,
         history_chars: cappedHistory.char_count
       });
-      res.status(200).json({
-        skip: true,
-        reason: "extracted_nothing",
-        analysis_id: analysisId ?? ""
-      });
+      res.status(200).json({ skip: true, reason: "extracted_nothing", analysis_id: analysisId ?? "" });
       return;
     }
 
-    // Insert with empty placeholder claims, then update with the enriched
-    // ones that carry the real analysis_id. We need the row id before we can
-    // stamp claim_id / analysis_id onto each claim.
     const analysisId = await insertFactCheckRow({
       user_id: user.user_id,
       body,
@@ -236,17 +276,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    const claims = buildClaims(result.result.claims, analysisId);
+    const verifiedClaims = await persistVerifiedClaims(
+      result.result.claims,
+      analysisId,
+      user.user_id,
+      latency_ms
+    );
+
+    // verifiable_claims keeps the Claim shape (no verification) so
+    // /api/verify-claim re-checks keep working unchanged.
+    const bareClaims: Claim[] = verifiedClaims.map(({ verification: _v, ...c }) => c);
     await supabaseService
       .from("response_analyses")
-      .update({ verifiable_claims: claims, provocation_count: claims.length })
+      .update({ verifiable_claims: bareClaims, provocation_count: bareClaims.length })
       .eq("id", analysisId);
 
     res.status(200).json({
       skip: false,
       analysis_id: analysisId,
-      claims,
-      prompt_version: FACT_CHECK_EXTRACTOR_VERSION
+      claims: verifiedClaims,
+      prompt_version: FACT_CHECK_COMBINED_VERSION
     });
   } catch (err) {
     console.error("[fact-check] unhandled", err);
