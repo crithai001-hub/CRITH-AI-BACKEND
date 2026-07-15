@@ -3,15 +3,16 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { applyCors, handlePreflight } from "../lib/cors.js";
 import { getUserFromRequest } from "../lib/auth.js";
 import { evaluateFactCheckSelectionGate } from "../lib/fact-check-selection-gate.js";
-import { factCheckSelectionExtract } from "../lib/gemini.js";
+import { factCheckSelectionCombined } from "../lib/gemini.js";
 import { supabaseService } from "../lib/supabase.js";
-import { FACT_CHECK_SELECTION_EXTRACTOR_VERSION } from "../prompts/fact-check-selection-extractor-prompt.js";
+import { FACT_CHECK_SELECTION_COMBINED_VERSION } from "../prompts/fact-check-selection-combined-prompt.js";
 import type {
   Claim,
   FactCheckSelectionRequestBody,
   Platform,
   SkipReason
 } from "../types/index.js";
+import { persistVerifiedClaims } from "./fact-check.js";
 
 const VALID_PLATFORMS: ReadonlySet<Platform> = new Set([
   "chatgpt",
@@ -79,7 +80,7 @@ async function insertSelectionRow(input: InsertRowInput): Promise<string | null>
       tokens_out: input.tokens_out,
       cached_tokens: 0,
       latency_ms: input.latency_ms,
-      prompt_version: FACT_CHECK_SELECTION_EXTRACTOR_VERSION,
+      prompt_version: FACT_CHECK_SELECTION_COMBINED_VERSION,
       verifiable_claims: input.claims,
       original_prompt: input.body.prompt,
       original_response: input.body.selected_text,
@@ -137,7 +138,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     }
 
     const start = Date.now();
-    const result = await factCheckSelectionExtract(
+    const result = await factCheckSelectionCombined(
       body.selected_text,
       body.context_before,
       body.context_after,
@@ -148,7 +149,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     if (!result.ok) {
       const reason: SkipReason =
         result.reason === "parse_error" ? "parse_error" : "gemini_error";
-      console.error("[fact-check-selection] extractor failed", { reason });
+      console.error("[fact-check-selection] combined check failed", { reason });
       const analysisId = await insertSelectionRow({
         user_id: user.user_id,
         body,
@@ -209,27 +210,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    const claims: Claim[] = claimsInSelection.map((c, idx) => ({
-      claim_id: `${analysisId}:${idx}`,
-      claim_index: idx,
-      analysis_id: analysisId,
-      claim_text: c.claim_text,
-      anchored_to: c.anchored_to,
-      claim_type: c.claim_type,
-      claim_subtype: c.claim_subtype,
-      why_check: c.why_check
-    }));
+    const verifiedClaims = await persistVerifiedClaims(
+      claimsInSelection,
+      analysisId,
+      user.user_id,
+      latency_ms
+    );
 
-    await supabaseService
+    const bareClaims: Claim[] = verifiedClaims.map(({ verification: _v, ...c }) => c);
+    const { error: updateError } = await supabaseService
       .from("response_analyses")
-      .update({ verifiable_claims: claims, provocation_count: claims.length })
+      .update({ verifiable_claims: bareClaims, provocation_count: bareClaims.length })
       .eq("id", analysisId);
+    if (updateError) {
+      console.error("[fact-check-selection] claims update failed", updateError);
+    }
 
     res.status(200).json({
       skip: false,
       analysis_id: analysisId,
-      claims,
-      prompt_version: FACT_CHECK_SELECTION_EXTRACTOR_VERSION
+      claims: verifiedClaims,
+      prompt_version: FACT_CHECK_SELECTION_COMBINED_VERSION
     });
   } catch (err) {
     console.error("[fact-check-selection] unhandled", err);
