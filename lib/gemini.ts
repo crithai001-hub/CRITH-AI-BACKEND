@@ -97,7 +97,10 @@ function isValidWasTrueUntil(s: string): boolean {
   return isValidIsoDate(s) || isValidYearMonth(s);
 }
 
-export function parseVerifierResponse(rawText: string): VerifierResult | null {
+export function parseVerifierResponse(
+  rawText: string,
+  groundingUrls: string[] = []
+): VerifierResult | null {
   const jsonText = extractFirstJsonBlock(rawText);
   if (!jsonText) return null;
 
@@ -113,7 +116,7 @@ export function parseVerifierResponse(rawText: string): VerifierResult | null {
   if (typeof obj.verdict !== "string" || !VALID_VERDICTS.has(obj.verdict as Verdict)) {
     return null;
   }
-  const verdict = obj.verdict as Verdict;
+  let verdict = obj.verdict as Verdict;
 
   if (typeof obj.evidence !== "string") return null;
   if (!Array.isArray(obj.source_urls)) return null;
@@ -149,9 +152,18 @@ export function parseVerifierResponse(rawText: string): VerifierResult | null {
     return null;
   }
 
-  const source_urls = obj.source_urls.filter(
-    (u): u is string => typeof u === "string" && u.length > 0
-  );
+  let source_urls = obj.source_urls
+    .filter((u): u is string => typeof u === "string" && u.length > 0 && !isSearchQueryUrl(u))
+    .slice(0, 5);
+  if (source_urls.length === 0 && groundingUrls.length > 0) {
+    source_urls = groundingUrls.slice(0, 3);
+  }
+
+  // Same precision rule as the combined parser: assertive verdicts need at
+  // least one source ("error" passes through untouched).
+  if (source_urls.length === 0 && (verdict === "supported" || verdict === "contradicted")) {
+    verdict = "unverified";
+  }
 
   const result: VerifierResult = {
     verdict,
@@ -248,9 +260,9 @@ export function parseCombinedResponse(
   if (!parsed || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;
 
+  if (obj.skip === true) return { skip: true, claims: [] };
   const claimsArray = Array.isArray(obj.claims) ? obj.claims : null;
   if (claimsArray === null) return null;
-  if (obj.skip === true) return { skip: true, claims: [] };
 
   const claims: RawVerifiedClaim[] = [];
   for (const raw of claimsArray.slice(0, MAX_CLAIMS)) {
@@ -274,7 +286,12 @@ export function parseCombinedResponse(
     if (recovered === null) continue;
     // Models often anchor to a whole sentence; a prefix of a verbatim
     // substring is still verbatim, so truncate rather than drop the claim.
-    const anchor = recovered.length > 80 ? recovered.slice(0, 80) : recovered;
+    // Back off one unit if the cut would split a surrogate pair.
+    let anchor = recovered;
+    if (anchor.length > 80) {
+      const cut = anchor.charCodeAt(79) >= 0xd800 && anchor.charCodeAt(79) <= 0xdbff ? 79 : 80;
+      anchor = anchor.slice(0, cut);
+    }
 
     const verification = parseCombinedVerification(c.verification, groundingUrls);
     if (verification === null) continue;
@@ -511,11 +528,17 @@ export async function factCheckVerify(input: FactCheckVerifyInput): Promise<Veri
     why_check: input.why_check,
     today: input.today ?? todayUtc()
   });
-  const call = await callGemini(FACT_CHECK_VERIFIER_PROMPT, userMessage, { withSearch: true, timeoutMs: VERIFY_TIMEOUT_MS });
+  const call = await callGemini(null, `${FACT_CHECK_VERIFIER_PROMPT}\n\n${userMessage}`, {
+    withSearch: true,
+    timeoutMs: VERIFY_TIMEOUT_MS,
+    // Grounded runs list very long vertexaisearch redirect URLs; 2048 gets
+    // truncated at MAX_TOKENS mid-JSON.
+    maxOutputTokens: 4096
+  });
   if (!call.ok) {
     return { ok: false, reason: "gemini_error", usage: { tokens_in: 0, tokens_out: 0 } };
   }
-  const parsed = parseVerifierResponse(call.text);
+  const parsed = parseVerifierResponse(call.text, call.groundingUrls);
   if (!parsed) return { ok: false, reason: "parse_error", usage: call.usage };
   return { ok: true, result: parsed, usage: call.usage };
 }
