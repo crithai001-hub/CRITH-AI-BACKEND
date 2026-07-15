@@ -101,6 +101,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         was_true_until: result.was_true_until ?? null,
         follow_up_prompt: result.follow_up_prompt ?? null,
         claim_subtype: claim.claim_subtype,
+        trigger: "manual",
         gemini_tokens_in: usage.tokens_in,
         gemini_tokens_out: usage.tokens_out,
         latency_ms
