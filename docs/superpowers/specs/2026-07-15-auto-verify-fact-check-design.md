@@ -35,7 +35,8 @@ the risky claims **with verdicts and sources already attached**. Gemini-only.
      exhaustive research).
    - Return a single JSON payload: per claim — `claim_text`, `anchored_to`,
      `claim_type`, `claim_subtype`, `why_check`, and a `verification` object
-     (`verdict`, `summary`, `sources[]`, `as_of_date`, `was_true_until`).
+     (`verdict`, `evidence`, `source_urls[]`, `as_of_date`, `was_true_until`,
+     `follow_up_prompt`) — same field names as the `/api/verify-claim` wire shape.
 3. **Persist** — one `response_analyses` row + one `claim_verifications` row per
    verified claim.
 4. **Respond** with everything in one payload.
@@ -45,7 +46,7 @@ slice of text.
 
 `POST /api/verify-claim` is **unchanged**: it remains the manual "re-check this
 one claim, dig deeper" path, especially for claims that came back
-`could_not_verify`. Its existing quota metering stays as-is.
+`unverified`. Its existing quota metering stays as-is.
 
 ### Latency budget (target 3–5s, hard cap 10s)
 
@@ -78,8 +79,8 @@ Preserved from v2 prompts:
 - Priority order: citation > statistic > quote > entity > general.
 - Two-axis taxonomy: `claim_type` (`factual` | `prescriptive`) ×
   `claim_subtype` (`citation` | `statistic` | `quote` | `entity` | `general`).
-- Verdicts: `found_supporting` | `found_contradicting` | `could_not_verify`,
-  defaulting to `could_not_verify`; never assert truth without recent
+- Verdicts: `supported` | `contradicted` | `unverified`,
+  defaulting to `unverified`; never assert truth without recent
   supporting sources; `as_of_date` always set; `was_true_until` only when a
   claim was once true and went stale.
 - Prompt-injection defense: `<prompt>` / `<response>` / `<history>` blocks are
@@ -107,11 +108,12 @@ Response shape for `/api/fact-check` and `/api/fact-check-selection`
       "claim_subtype": "citation",
       "why_check": "...",
       "verification": {
-        "verdict": "found_contradicting",
-        "summary": "one-paragraph explanation",
-        "sources": [{ "title": "...", "url": "..." }],
+        "verdict": "contradicted",
+        "evidence": "2-4 sentence explanation of what sources show",
+        "source_urls": ["https://..."],
         "as_of_date": "2026-07-15",
-        "was_true_until": null
+        "was_true_until": null,
+        "follow_up_prompt": "ready-to-send correction message, or absent"
       }
     }
   ],
@@ -140,8 +142,8 @@ quota behavior (metered only on successful, persisted verifications).
   No broken half-state in the extension.
 - JSON parses but one claim's verification is malformed → drop that claim,
   keep the rest.
-- A `found_supporting` / `found_contradicting` verdict arriving without at
-  least one source → downgrade to `could_not_verify` (precision rule).
+- A `supported` / `contradicted` verdict arriving without at
+  least one source → downgrade to `unverified` (precision rule).
 - Persistence failure after a successful Gemini call → still return results to
   the user; log the failure.
 
@@ -161,7 +163,7 @@ quota behavior (metered only on successful, persisted verifications).
   source-downgrade rule; malformed-claim dropping; timeout → skip path;
   `trigger` value persisted correctly.
 - **Smoke (`test-curl.sh`):** fake-citation response → expect
-  `found_contradicting`; common-knowledge-only response → expect `skip`;
+  `contradicted`; common-knowledge-only response → expect `skip`;
   selection-mode check.
 - **Live latency check:** run real Gemini calls before merge; confirm p50 in
   the 3–6s band.
