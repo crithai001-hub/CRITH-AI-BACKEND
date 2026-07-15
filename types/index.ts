@@ -161,11 +161,6 @@ export interface RawExtractedClaim {
   why_check: string;
 }
 
-export interface ExtractorResult {
-  skip: boolean;
-  claims: RawExtractedClaim[];
-}
-
 // was_true_until and follow_up_prompt use the same optional encoding as
 // VerifyResponse so the internal-to-wire mapping in /api/verify-claim is a
 // direct field copy. follow_up_prompt is omitted when verdict === "supported".

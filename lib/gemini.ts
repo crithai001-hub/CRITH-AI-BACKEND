@@ -1,13 +1,13 @@
 // lib/gemini.ts
 import { recoverAnchor } from "./anchor.js";
 import {
-  FACT_CHECK_EXTRACTOR_PROMPT,
-  buildFactCheckUserMessage
-} from "../prompts/fact-check-extractor-prompt.js";
+  FACT_CHECK_COMBINED_PROMPT,
+  buildFactCheckCombinedUserMessage
+} from "../prompts/fact-check-combined-prompt.js";
 import {
-  FACT_CHECK_SELECTION_EXTRACTOR_PROMPT,
-  buildFactCheckSelectionUserMessage
-} from "../prompts/fact-check-selection-extractor-prompt.js";
+  FACT_CHECK_SELECTION_COMBINED_PROMPT,
+  buildFactCheckSelectionCombinedUserMessage
+} from "../prompts/fact-check-selection-combined-prompt.js";
 import {
   FACT_CHECK_VERIFIER_PROMPT,
   buildFactCheckVerifierUserMessage
@@ -17,7 +17,6 @@ import type {
   ClaimType,
   CombinedCheckResult,
   ConversationTurn,
-  ExtractorResult,
   GeminiUsage,
   RawExtractedClaim,
   RawVerifiedClaim,
@@ -67,65 +66,6 @@ export function extractFirstJsonBlock(text: string): string | null {
   return null;
 }
 
-export function parseExtractorResponse(
-  rawText: string,
-  source: string
-): ExtractorResult | null {
-  const jsonText = extractFirstJsonBlock(rawText);
-  if (!jsonText) return null;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonText);
-  } catch {
-    return null;
-  }
-
-  if (!parsed || typeof parsed !== "object") return null;
-  const obj = parsed as Record<string, unknown>;
-
-  // skip is optional in the new prompt — a missing/false `skip` with an empty
-  // claims array is equivalent to {skip: true, claims: []}. Treat that case as
-  // a normal extracted_nothing outcome rather than a parse error.
-  const claimsArray = Array.isArray(obj.claims) ? obj.claims : null;
-  if (claimsArray === null) return null;
-  if (obj.skip === true) return { skip: true, claims: [] };
-
-  const claims: RawExtractedClaim[] = [];
-  for (const raw of claimsArray.slice(0, MAX_CLAIMS)) {
-    if (!raw || typeof raw !== "object") continue;
-    const c = raw as Record<string, unknown>;
-    if (
-      typeof c.claim_text !== "string" ||
-      typeof c.anchored_to !== "string" ||
-      typeof c.claim_type !== "string" ||
-      typeof c.claim_subtype !== "string" ||
-      typeof c.why_check !== "string"
-    ) {
-      continue;
-    }
-    if (!VALID_CLAIM_TYPES.has(c.claim_type as ClaimType)) continue;
-    if (!VALID_CLAIM_SUBTYPES.has(c.claim_subtype as ClaimSubtype)) continue;
-    if (c.claim_text.length === 0 || c.claim_text.length > 400) continue;
-    if (c.why_check.length === 0 || c.why_check.length > 200) continue;
-
-    const recovered = recoverAnchor(c.anchored_to, source);
-    if (recovered === null) continue;
-    // Spec contract: anchored_to is 30-80 chars. recoverAnchor enforces the
-    // lower bound via ANCHOR_MIN_LEN; we enforce the upper bound here.
-    if (recovered.length > 80) continue;
-
-    claims.push({
-      claim_text: c.claim_text,
-      anchored_to: recovered,
-      claim_type: c.claim_type as ClaimType,
-      claim_subtype: c.claim_subtype as ClaimSubtype,
-      why_check: c.why_check
-    });
-  }
-
-  return { skip: false, claims };
-}
 
 const VALID_VERDICTS = new Set<Verdict>([
   "supported",
@@ -341,7 +281,6 @@ export function parseCombinedResponse(
 
 const GEMINI_ENDPOINT =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
-const EXTRACT_TIMEOUT_MS = 15000;
 const VERIFY_TIMEOUT_MS = 30000; // grounded search needs more headroom
 
 interface GeminiResponse {
@@ -367,24 +306,38 @@ interface GeminiCallFailure {
 }
 type GeminiCallResult = GeminiCallSuccess | GeminiCallFailure;
 
+interface GeminiCallOptions {
+  withSearch: boolean;
+  timeoutMs: number;
+  disableThinking?: boolean;
+  maxOutputTokens?: number;
+}
+
 async function callGemini(
   system: string,
   userMessage: string,
-  withSearch: boolean,
-  timeoutMs: number
+  opts: GeminiCallOptions
 ): Promise<GeminiCallResult> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return { ok: false, reason: "no_api_key" };
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
+
+  const generationConfig: Record<string, unknown> = {
+    temperature: 0.1,
+    maxOutputTokens: opts.maxOutputTokens ?? (opts.withSearch ? 2048 : 1024)
+  };
+  if (opts.disableThinking) {
+    generationConfig.thinkingConfig = { thinkingBudget: 0 };
+  }
 
   const body: Record<string, unknown> = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts: [{ text: userMessage }] }],
-    generationConfig: { temperature: 0.1, maxOutputTokens: withSearch ? 2048 : 1024 }
+    generationConfig
   };
-  if (withSearch) {
+  if (opts.withSearch) {
     body.tools = [{ google_search: {} }];
   }
 
@@ -427,55 +380,72 @@ async function callGemini(
   return { ok: true, text, usage };
 }
 
-export interface ExtractorCallSuccess {
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+const COMBINED_TIMEOUT_MS = 10000; // hard latency cap per spec
+
+export interface CombinedCallSuccess {
   ok: true;
-  result: ExtractorResult;
+  result: CombinedCheckResult;
   usage: GeminiUsage;
 }
-export interface ExtractorCallFailure {
+export interface CombinedCallFailure {
   ok: false;
   reason: "parse_error" | "gemini_error";
   usage: GeminiUsage;
 }
-export type ExtractorCallResult = ExtractorCallSuccess | ExtractorCallFailure;
+export type CombinedCallResult = CombinedCallSuccess | CombinedCallFailure;
 
-export async function factCheckExtract(
+export async function factCheckCombined(
   userPrompt: string,
   aiResponse: string,
   conversationHistory?: ReadonlyArray<ConversationTurn>
-): Promise<ExtractorCallResult> {
-  const userMessage = buildFactCheckUserMessage(userPrompt, aiResponse, conversationHistory);
-  const call = await callGemini(FACT_CHECK_EXTRACTOR_PROMPT, userMessage, false, EXTRACT_TIMEOUT_MS);
+): Promise<CombinedCallResult> {
+  const userMessage = buildFactCheckCombinedUserMessage(
+    userPrompt,
+    aiResponse,
+    todayUtc(),
+    conversationHistory
+  );
+  const call = await callGemini(FACT_CHECK_COMBINED_PROMPT, userMessage, {
+    withSearch: true,
+    timeoutMs: COMBINED_TIMEOUT_MS,
+    disableThinking: true,
+    maxOutputTokens: 4096
+  });
   if (!call.ok) {
     return { ok: false, reason: "gemini_error", usage: { tokens_in: 0, tokens_out: 0 } };
   }
-  const parsed = parseExtractorResponse(call.text, aiResponse);
+  const parsed = parseCombinedResponse(call.text, aiResponse);
   if (!parsed) return { ok: false, reason: "parse_error", usage: call.usage };
   return { ok: true, result: parsed, usage: call.usage };
 }
 
-export async function factCheckSelectionExtract(
+export async function factCheckSelectionCombined(
   selectedText: string,
   contextBefore: string,
   contextAfter: string,
   originatingPrompt: string
-): Promise<ExtractorCallResult> {
-  const userMessage = buildFactCheckSelectionUserMessage(
+): Promise<CombinedCallResult> {
+  const userMessage = buildFactCheckSelectionCombinedUserMessage(
     selectedText,
     contextBefore,
     contextAfter,
-    originatingPrompt
+    originatingPrompt,
+    todayUtc()
   );
-  const call = await callGemini(
-    FACT_CHECK_SELECTION_EXTRACTOR_PROMPT,
-    userMessage,
-    false,
-    EXTRACT_TIMEOUT_MS
-  );
+  const call = await callGemini(FACT_CHECK_SELECTION_COMBINED_PROMPT, userMessage, {
+    withSearch: true,
+    timeoutMs: COMBINED_TIMEOUT_MS,
+    disableThinking: true,
+    maxOutputTokens: 4096
+  });
   if (!call.ok) {
     return { ok: false, reason: "gemini_error", usage: { tokens_in: 0, tokens_out: 0 } };
   }
-  const parsed = parseExtractorResponse(call.text, selectedText);
+  const parsed = parseCombinedResponse(call.text, selectedText);
   if (!parsed) return { ok: false, reason: "parse_error", usage: call.usage };
   return { ok: true, result: parsed, usage: call.usage };
 }
@@ -500,10 +470,6 @@ export interface FactCheckVerifyInput {
   today?: string; // YYYY-MM-DD; defaults to today (UTC)
 }
 
-function todayUtc(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 export async function factCheckVerify(input: FactCheckVerifyInput): Promise<VerifierCallResult> {
   const userMessage = buildFactCheckVerifierUserMessage({
     claim_text: input.claim_text,
@@ -512,7 +478,7 @@ export async function factCheckVerify(input: FactCheckVerifyInput): Promise<Veri
     why_check: input.why_check,
     today: input.today ?? todayUtc()
   });
-  const call = await callGemini(FACT_CHECK_VERIFIER_PROMPT, userMessage, true, VERIFY_TIMEOUT_MS);
+  const call = await callGemini(FACT_CHECK_VERIFIER_PROMPT, userMessage, { withSearch: true, timeoutMs: VERIFY_TIMEOUT_MS });
   if (!call.ok) {
     return { ok: false, reason: "gemini_error", usage: { tokens_in: 0, tokens_out: 0 } };
   }
