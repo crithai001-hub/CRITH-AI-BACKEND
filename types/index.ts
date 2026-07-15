@@ -181,14 +181,7 @@ export interface VerifierResult {
 // Internal shape parsed from the combined extract+verify Gemini response,
 // before claims are enriched with claim_id / analysis_id.
 export interface RawVerifiedClaim extends RawExtractedClaim {
-  verification: {
-    verdict: Verdict;
-    evidence: string;
-    source_urls: string[];
-    as_of_date: string;
-    was_true_until?: string;
-    follow_up_prompt?: string;
-  };
+  verification: Omit<ClaimVerificationPayload, "verification_id">;
 }
 
 export interface CombinedCheckResult {
