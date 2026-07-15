@@ -286,10 +286,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     // verifiable_claims keeps the Claim shape (no verification) so
     // /api/verify-claim re-checks keep working unchanged.
     const bareClaims: Claim[] = verifiedClaims.map(({ verification: _v, ...c }) => c);
-    await supabaseService
+    const { error: updateError } = await supabaseService
       .from("response_analyses")
       .update({ verifiable_claims: bareClaims, provocation_count: bareClaims.length })
       .eq("id", analysisId);
+    if (updateError) {
+      console.error("[fact-check] claims update failed", updateError);
+    }
 
     res.status(200).json({
       skip: false,
