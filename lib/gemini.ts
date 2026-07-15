@@ -15,10 +15,12 @@ import {
 import type {
   ClaimSubtype,
   ClaimType,
+  CombinedCheckResult,
   ConversationTurn,
   ExtractorResult,
   GeminiUsage,
   RawExtractedClaim,
+  RawVerifiedClaim,
   Verdict,
   VerifierResult
 } from "../types/index.js";
@@ -220,6 +222,119 @@ export function parseVerifierResponse(rawText: string): VerifierResult | null {
   if (was_true_until !== undefined) result.was_true_until = was_true_until;
   if (follow_up_prompt !== undefined) result.follow_up_prompt = follow_up_prompt;
   return result;
+}
+
+const COMBINED_VERDICTS = new Set<Verdict>(["supported", "contradicted", "unverified"]);
+
+function parseCombinedVerification(
+  raw: unknown
+): RawVerifiedClaim["verification"] | null {
+  if (!raw || typeof raw !== "object") return null;
+  const v = raw as Record<string, unknown>;
+
+  if (typeof v.verdict !== "string" || !COMBINED_VERDICTS.has(v.verdict as Verdict)) return null;
+  if (typeof v.evidence !== "string" || v.evidence.length === 0) return null;
+  if (!Array.isArray(v.source_urls)) return null;
+  if (typeof v.as_of_date !== "string" || !isValidIsoDate(v.as_of_date)) return null;
+
+  let was_true_until: string | undefined;
+  if (v.was_true_until === undefined || v.was_true_until === null) {
+    was_true_until = undefined;
+  } else if (typeof v.was_true_until === "string" && isValidWasTrueUntil(v.was_true_until)) {
+    was_true_until = v.was_true_until;
+  } else {
+    return null;
+  }
+
+  let follow_up_prompt: string | undefined;
+  if (v.follow_up_prompt === undefined || v.follow_up_prompt === null) {
+    follow_up_prompt = undefined;
+  } else if (typeof v.follow_up_prompt === "string") {
+    const trimmed = v.follow_up_prompt.trim();
+    follow_up_prompt =
+      trimmed.length === 0 ? undefined : trimmed.length > 450 ? trimmed.slice(0, 450) : trimmed;
+  } else {
+    return null;
+  }
+
+  const source_urls = v.source_urls.filter(
+    (u): u is string => typeof u === "string" && u.length > 0
+  );
+
+  // Precision rule: an assertive verdict without at least one source is
+  // downgraded to unverified rather than trusted.
+  let verdict = v.verdict as Verdict;
+  if (source_urls.length === 0 && verdict !== "unverified") {
+    verdict = "unverified";
+  }
+
+  const result: RawVerifiedClaim["verification"] = {
+    verdict,
+    evidence: v.evidence,
+    source_urls,
+    as_of_date: v.as_of_date
+  };
+  if (was_true_until !== undefined) result.was_true_until = was_true_until;
+  if (follow_up_prompt !== undefined) result.follow_up_prompt = follow_up_prompt;
+  return result;
+}
+
+export function parseCombinedResponse(
+  rawText: string,
+  source: string
+): CombinedCheckResult | null {
+  const jsonText = extractFirstJsonBlock(rawText);
+  if (!jsonText) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const obj = parsed as Record<string, unknown>;
+
+  const claimsArray = Array.isArray(obj.claims) ? obj.claims : null;
+  if (claimsArray === null) return null;
+  if (obj.skip === true) return { skip: true, claims: [] };
+
+  const claims: RawVerifiedClaim[] = [];
+  for (const raw of claimsArray.slice(0, MAX_CLAIMS)) {
+    if (!raw || typeof raw !== "object") continue;
+    const c = raw as Record<string, unknown>;
+    if (
+      typeof c.claim_text !== "string" ||
+      typeof c.anchored_to !== "string" ||
+      typeof c.claim_type !== "string" ||
+      typeof c.claim_subtype !== "string" ||
+      typeof c.why_check !== "string"
+    ) {
+      continue;
+    }
+    if (!VALID_CLAIM_TYPES.has(c.claim_type as ClaimType)) continue;
+    if (!VALID_CLAIM_SUBTYPES.has(c.claim_subtype as ClaimSubtype)) continue;
+    if (c.claim_text.length === 0 || c.claim_text.length > 400) continue;
+    if (c.why_check.length === 0 || c.why_check.length > 200) continue;
+
+    const recovered = recoverAnchor(c.anchored_to, source);
+    if (recovered === null) continue;
+    if (recovered.length > 80) continue;
+
+    const verification = parseCombinedVerification(c.verification);
+    if (verification === null) continue;
+
+    claims.push({
+      claim_text: c.claim_text,
+      anchored_to: recovered,
+      claim_type: c.claim_type as ClaimType,
+      claim_subtype: c.claim_subtype as ClaimSubtype,
+      why_check: c.why_check,
+      verification
+    });
+  }
+
+  return { skip: false, claims };
 }
 
 // --- Gemini REST client ---
