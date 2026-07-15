@@ -166,8 +166,15 @@ export function parseVerifierResponse(rawText: string): VerifierResult | null {
 
 const COMBINED_VERDICTS = new Set<Verdict>(["supported", "contradicted", "unverified"]);
 
+// Search-query URLs are not sources — models sometimes emit the queries they
+// ran instead of the pages they found.
+function isSearchQueryUrl(u: string): boolean {
+  return /^https?:\/\/(www\.)?(google|bing|duckduckgo)\.[^/]+\/search/i.test(u);
+}
+
 function parseCombinedVerification(
-  raw: unknown
+  raw: unknown,
+  fallbackSourceUrls: string[]
 ): RawVerifiedClaim["verification"] | null {
   if (!raw || typeof raw !== "object") return null;
   const v = raw as Record<string, unknown>;
@@ -197,9 +204,14 @@ function parseCombinedVerification(
     return null;
   }
 
-  const source_urls = v.source_urls.filter(
-    (u): u is string => typeof u === "string" && u.length > 0
-  );
+  let source_urls = v.source_urls
+    .filter((u): u is string => typeof u === "string" && u.length > 0 && !isSearchQueryUrl(u))
+    .slice(0, 5);
+  // Grounded search ran real queries even when the model's JSON omits the
+  // pages it read — backfill from grounding metadata before downgrading.
+  if (source_urls.length === 0 && fallbackSourceUrls.length > 0) {
+    source_urls = fallbackSourceUrls.slice(0, 3);
+  }
 
   // Precision rule: an assertive verdict without at least one source is
   // downgraded to unverified rather than trusted.
@@ -221,7 +233,8 @@ function parseCombinedVerification(
 
 export function parseCombinedResponse(
   rawText: string,
-  source: string
+  source: string,
+  groundingUrls: string[] = []
 ): CombinedCheckResult | null {
   const jsonText = extractFirstJsonBlock(rawText);
   if (!jsonText) return null;
@@ -259,14 +272,16 @@ export function parseCombinedResponse(
 
     const recovered = recoverAnchor(c.anchored_to, source);
     if (recovered === null) continue;
-    if (recovered.length > 80) continue;
+    // Models often anchor to a whole sentence; a prefix of a verbatim
+    // substring is still verbatim, so truncate rather than drop the claim.
+    const anchor = recovered.length > 80 ? recovered.slice(0, 80) : recovered;
 
-    const verification = parseCombinedVerification(c.verification);
+    const verification = parseCombinedVerification(c.verification, groundingUrls);
     if (verification === null) continue;
 
     claims.push({
       claim_text: c.claim_text,
-      anchored_to: recovered,
+      anchored_to: anchor,
       claim_type: c.claim_type as ClaimType,
       claim_subtype: c.claim_subtype as ClaimSubtype,
       why_check: c.why_check,
@@ -286,7 +301,9 @@ const VERIFY_TIMEOUT_MS = 30000; // grounded search needs more headroom
 interface GeminiResponse {
   candidates?: Array<{
     content?: { parts?: Array<{ text?: unknown }> };
-    groundingMetadata?: unknown;
+    groundingMetadata?: {
+      groundingChunks?: Array<{ web?: { uri?: unknown } }>;
+    };
   }>;
   usageMetadata?: {
     promptTokenCount?: number;
@@ -298,6 +315,7 @@ interface GeminiCallSuccess {
   ok: true;
   text: string;
   usage: GeminiUsage;
+  groundingUrls: string[];
 }
 interface GeminiCallFailure {
   ok: false;
@@ -313,8 +331,12 @@ interface GeminiCallOptions {
   maxOutputTokens?: number;
 }
 
+// system === null sends the entire prompt in the user message. Required for
+// grounded calls: with a systemInstruction, Gemini 2.5 Flash skips the
+// google_search tool entirely and fabricates "I searched" verdicts from
+// memory (observed live 2026-07-15; user-message placement fires reliably).
 async function callGemini(
-  system: string,
+  system: string | null,
   userMessage: string,
   opts: GeminiCallOptions
 ): Promise<GeminiCallResult> {
@@ -333,10 +355,12 @@ async function callGemini(
   }
 
   const body: Record<string, unknown> = {
-    systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts: [{ text: userMessage }] }],
     generationConfig
   };
+  if (system !== null) {
+    body.systemInstruction = { parts: [{ text: system }] };
+  }
   if (opts.withSearch) {
     body.tools = [{ google_search: {} }];
   }
@@ -377,14 +401,23 @@ async function callGemini(
     tokens_in: payload.usageMetadata?.promptTokenCount ?? 0,
     tokens_out: payload.usageMetadata?.candidatesTokenCount ?? 0
   };
-  return { ok: true, text, usage };
+  const groundingUrls: string[] = [];
+  for (const chunk of payload.candidates?.[0]?.groundingMetadata?.groundingChunks ?? []) {
+    const uri = chunk?.web?.uri;
+    if (typeof uri === "string" && uri.length > 0 && !groundingUrls.includes(uri)) {
+      groundingUrls.push(uri);
+    }
+  }
+  return { ok: true, text, usage, groundingUrls };
 }
 
 function todayUtc(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-const COMBINED_TIMEOUT_MS = 10000; // hard latency cap per spec
+// Real grounded search costs 6.5-11.5s per live measurement; 15s leaves
+// headroom without letting the extension hang.
+const COMBINED_TIMEOUT_MS = 15000;
 
 export interface CombinedCallSuccess {
   ok: true;
@@ -409,7 +442,7 @@ export async function factCheckCombined(
     todayUtc(),
     conversationHistory
   );
-  const call = await callGemini(FACT_CHECK_COMBINED_PROMPT, userMessage, {
+  const call = await callGemini(null, `${FACT_CHECK_COMBINED_PROMPT}\n\n${userMessage}`, {
     withSearch: true,
     timeoutMs: COMBINED_TIMEOUT_MS,
     disableThinking: true,
@@ -418,7 +451,7 @@ export async function factCheckCombined(
   if (!call.ok) {
     return { ok: false, reason: "gemini_error", usage: { tokens_in: 0, tokens_out: 0 } };
   }
-  const parsed = parseCombinedResponse(call.text, aiResponse);
+  const parsed = parseCombinedResponse(call.text, aiResponse, call.groundingUrls);
   if (!parsed) return { ok: false, reason: "parse_error", usage: call.usage };
   return { ok: true, result: parsed, usage: call.usage };
 }
@@ -436,7 +469,7 @@ export async function factCheckSelectionCombined(
     originatingPrompt,
     todayUtc()
   );
-  const call = await callGemini(FACT_CHECK_SELECTION_COMBINED_PROMPT, userMessage, {
+  const call = await callGemini(null, `${FACT_CHECK_SELECTION_COMBINED_PROMPT}\n\n${userMessage}`, {
     withSearch: true,
     timeoutMs: COMBINED_TIMEOUT_MS,
     disableThinking: true,
@@ -445,7 +478,7 @@ export async function factCheckSelectionCombined(
   if (!call.ok) {
     return { ok: false, reason: "gemini_error", usage: { tokens_in: 0, tokens_out: 0 } };
   }
-  const parsed = parseCombinedResponse(call.text, selectedText);
+  const parsed = parseCombinedResponse(call.text, selectedText, call.groundingUrls);
   if (!parsed) return { ok: false, reason: "parse_error", usage: call.usage };
   return { ok: true, result: parsed, usage: call.usage };
 }

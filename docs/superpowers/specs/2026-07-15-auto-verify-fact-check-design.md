@@ -48,13 +48,28 @@ slice of text.
 one claim, dig deeper" path, especially for claims that came back
 `unverified`. Its existing quota metering stays as-is.
 
-### Latency budget (target 3–5s, hard cap 10s)
+### Latency budget (revised 2026-07-15: ~6–12s when claims found, hard cap 15s)
+
+Live testing showed the original 3–5s target and real grounded verification are
+incompatible: Gemini's actual web searches cost 6.5–11.5s. The user chose real
+verification over speed (option 1, conversation 2026-07-15).
 
 - Single network round trip; Gemini runs its searches internally.
 - `thinkingBudget: 0` on the Flash call.
-- Max 3 claims; prompt says to search efficiently.
-- Hard 10s timeout on the Gemini fetch → clean `skip: true` on timeout.
+- Max 3 claims; prompt limits to 1–2 queries per claim.
+- The prompt is sent **in the user message, not as `systemInstruction`** — with
+  a systemInstruction, Gemini 2.5 Flash skips the google_search tool and
+  fabricates memory-based "I searched" verdicts (observed live: 0/13 runs
+  grounded via systemInstruction vs 5/5 via user message + end-positioned
+  search directive).
+- Verdict integrity: assertive verdicts without sources downgrade to
+  `unverified`; grounding-chunk URLs backfill `source_urls` when the model's
+  JSON omits them; search-query URLs are filtered; sources capped at 5.
+- Hard 15s timeout on the Gemini fetch → clean `skip: true` on timeout.
+- Responses with no risky claims still skip in ~1s (no search runs).
 - `latency_ms` persisted per call (existing column) for p50/p95 monitoring.
+- Measured live 2026-07-15: fake-citation case p50 8.6s, min 6.3s, max 11.1s,
+  5/5 `contradicted` with real sources; common-knowledge skip 1.2s.
 
 ## Claim selection bar ("gap-spotting")
 

@@ -23,7 +23,8 @@ NEVER select: common knowledge, opinions, hedged statements, instructions, code,
 Prescriptive claims (narrow special case): never check a recommendation itself; only its checkable factual or time-sensitive substrate, labeled claim_type "prescriptive".
 
 # Step 2 — Verify each selected claim with Google Search
-- Focused searches biased toward recent results; recency qualifiers for anything that changes.
+- CRITICAL: verdicts must come from Google Search results in THIS conversation, never from memory. Use the google_search tool for every selected claim. If you have not actually searched, the only valid verdict is "unverified".
+- Focused searches biased toward recent results; recency qualifiers for anything that changes. One or two queries per claim, no more.
 - Prefer primary and authoritative sources.
 - CITATION claims: confirm the source EXISTS and says what is attributed to it. An unlocatable source is a strong fabrication signal — report "contradicted" with cautious language.
 - Prescriptive claims: verify ONLY the substrate, never whether the recommendation is "best".
@@ -109,5 +110,6 @@ Context after the selection:
 ${neutralizeTerminators(contextAfter)}
 </context_after>
 
-Select up to 3 claims from the highlighted selection only, verify each with Google Search, and return JSON only.`;
+Select up to 3 claims from the highlighted selection only, verify each with Google Search, and return JSON only.
+CRITICAL: verdicts must come from google_search results in THIS conversation, never from memory. Search first (1-2 focused queries per claim, no more), then write the JSON. If you have not actually searched, the only valid verdict is "unverified".`;
 }

@@ -65,6 +65,18 @@ describe("parseCombinedResponse", () => {
     expect(result!.claims[0]!.anchored_to).toBe(ANCHOR_A);
   });
 
+  it("truncates a >80-char verbatim anchor instead of dropping the claim", () => {
+    const longAnchor =
+      "The Zylo 2024 report found that cold outreach conversion rose 340% year over year, and";
+    const withLongAnchor = claim({ anchored_to: longAnchor });
+    const raw = JSON.stringify({ skip: false, claims: [withLongAnchor] });
+    const result = parseCombinedResponse(raw, SOURCE);
+    expect(result!.claims).toHaveLength(1);
+    const anchor = result!.claims[0]!.anchored_to;
+    expect(anchor.length).toBeLessThanOrEqual(80);
+    expect(SOURCE.includes(anchor)).toBe(true);
+  });
+
   it("downgrades supported/contradicted without sources to unverified", () => {
     const noSources = claim({
       verification: { ...claim().verification, source_urls: [] }
@@ -72,6 +84,61 @@ describe("parseCombinedResponse", () => {
     const raw = JSON.stringify({ skip: false, claims: [noSources] });
     const result = parseCombinedResponse(raw, SOURCE);
     expect(result!.claims[0]!.verification.verdict).toBe("unverified");
+  });
+
+  it("backfills empty source_urls from grounding URLs instead of downgrading", () => {
+    const noSources = claim({
+      verification: { ...claim().verification, source_urls: [] }
+    });
+    const raw = JSON.stringify({ skip: false, claims: [noSources] });
+    const result = parseCombinedResponse(raw, SOURCE, [
+      "https://grounding.example.com/a",
+      "https://grounding.example.com/b"
+    ]);
+    expect(result!.claims[0]!.verification.verdict).toBe("contradicted");
+    expect(result!.claims[0]!.verification.source_urls).toEqual([
+      "https://grounding.example.com/a",
+      "https://grounding.example.com/b"
+    ]);
+  });
+
+  it("filters search-query URLs, then backfills from grounding URLs", () => {
+    const searchOnly = claim({
+      verification: {
+        ...claim().verification,
+        source_urls: ["https://www.google.com/search?q=zylo+2024+report"]
+      }
+    });
+    const raw = JSON.stringify({ skip: false, claims: [searchOnly] });
+    const result = parseCombinedResponse(raw, SOURCE, ["https://grounding.example.com/a"]);
+    expect(result!.claims[0]!.verification.source_urls).toEqual([
+      "https://grounding.example.com/a"
+    ]);
+  });
+
+  it("caps model-provided source_urls at 5", () => {
+    const many = claim({
+      verification: {
+        ...claim().verification,
+        source_urls: Array.from({ length: 9 }, (_, i) => `https://example.com/src-${i}`)
+      }
+    });
+    const raw = JSON.stringify({ skip: false, claims: [many] });
+    const result = parseCombinedResponse(raw, SOURCE);
+    expect(result!.claims[0]!.verification.source_urls).toHaveLength(5);
+  });
+
+  it("downgrades when search-query URLs are filtered and no grounding fallback exists", () => {
+    const searchOnly = claim({
+      verification: {
+        ...claim().verification,
+        source_urls: ["https://www.google.com/search?q=zylo+2024+report"]
+      }
+    });
+    const raw = JSON.stringify({ skip: false, claims: [searchOnly] });
+    const result = parseCombinedResponse(raw, SOURCE);
+    expect(result!.claims[0]!.verification.verdict).toBe("unverified");
+    expect(result!.claims[0]!.verification.source_urls).toEqual([]);
   });
 
   it("allows unverified with empty sources", () => {

@@ -33,7 +33,8 @@ Returning zero claims is the correct, expected outcome for most responses. Never
 Prescriptive claims (narrow special case): if the response recommends something ("X is the best way to Y"), never check the recommendation itself. Only if it rests on a checkable factual or time-sensitive substrate, label claim_type "prescriptive" and check the substrate ("cold email is a free, currently effective outbound channel"), not the opinion.
 
 # Step 2 — Verify each selected claim with Google Search
-- Run focused searches biased toward recent results; add recency qualifiers for anything that changes over time.
+- CRITICAL: verdicts must come from Google Search results in THIS conversation, never from memory. Use the google_search tool for every selected claim. If you have not actually searched, the only valid verdict is "unverified".
+- Run focused searches biased toward recent results; add recency qualifiers for anything that changes over time. One or two queries per claim, no more.
 - Prefer primary and authoritative sources over aggregators.
 - For CITATION claims: first confirm the source EXISTS and says what is attributed to it. A source you cannot locate at all is a strong fabrication signal — report "contradicted" with cautious language ("this source could not be located and may not exist").
 - For prescriptive claims: verify ONLY the factual/time substrate, never whether the recommendation is "best".
@@ -111,5 +112,6 @@ ${neutralizeTerminators(userPrompt)}
 ${neutralizeTerminators(aiResponse)}
 </response>
 
-Select up to 3 claims from the response only (not prompt or history), verify each with Google Search, and return JSON only.`;
+Select up to 3 claims from the response only (not prompt or history), verify each with Google Search, and return JSON only.
+CRITICAL: verdicts must come from google_search results in THIS conversation, never from memory. Search first (1-2 focused queries per claim, no more), then write the JSON. If you have not actually searched, the only valid verdict is "unverified".`;
 }
