@@ -60,6 +60,22 @@ export interface Claim {
   why_check: string;        // names the specific falsifiable element
 }
 
+// Verification payload embedded in auto-verified claims. Field names match
+// the /api/verify-claim wire shape so the extension renders both identically.
+export interface ClaimVerificationPayload {
+  verdict: Verdict;
+  evidence: string;
+  source_urls: string[];
+  as_of_date: string;
+  was_true_until?: string;
+  follow_up_prompt?: string;
+  verification_id?: string; // absent if the claim_verifications insert failed
+}
+
+export interface VerifiedClaim extends Claim {
+  verification: ClaimVerificationPayload;
+}
+
 // ---- Requests ----
 
 export interface FactCheckRequestBody {
@@ -92,7 +108,7 @@ export type FactCheckResponse =
   | {
       skip: false;
       analysis_id: string;
-      claims: Claim[];
+      claims: VerifiedClaim[];
       prompt_version: string;
     }
   | { skip: true; reason: SkipReason; analysis_id: string }
@@ -160,4 +176,22 @@ export interface VerifierResult {
   as_of_date: string;
   was_true_until?: string;
   follow_up_prompt?: string;
+}
+
+// Internal shape parsed from the combined extract+verify Gemini response,
+// before claims are enriched with claim_id / analysis_id.
+export interface RawVerifiedClaim extends RawExtractedClaim {
+  verification: {
+    verdict: Verdict;
+    evidence: string;
+    source_urls: string[];
+    as_of_date: string;
+    was_true_until?: string;
+    follow_up_prompt?: string;
+  };
+}
+
+export interface CombinedCheckResult {
+  skip: boolean;
+  claims: RawVerifiedClaim[];
 }
